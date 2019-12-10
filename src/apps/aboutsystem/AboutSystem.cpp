@@ -102,7 +102,7 @@ static const char* kLGPLv21 = B_TRANSLATE_MARK("GNU LGPL v2.1");
 #if 0
 static const char* kPublicDomain = B_TRANSLATE_MARK("Public Domain");
 #endif
-#ifdef __INTEL__
+#ifdef __i386__
 static const char* kIntel2xxxFirmware = B_TRANSLATE_MARK("Intel (2xxx firmware)");
 static const char* kIntelFirmware = B_TRANSLATE_MARK("Intel (firmware)");
 static const char* kMarvellFirmware = B_TRANSLATE_MARK("Marvell (firmware)");
@@ -1117,19 +1117,9 @@ AboutView::_CreateCreditsView()
 		StringVector(),
 		"https://www.freebsd.org");
 
-	// NetBSD copyrights
-	AddCopyrightEntry("The NetBSD Project",
-		B_TRANSLATE("Contains software developed by the NetBSD "
-		"Foundation, Inc. and its contributors:\n"
-		"ftp, tput\n"
-		COPYRIGHT_STRING "1996-2008 The NetBSD Foundation, Inc. "
-		"All rights reserved."),
-		"https://www.netbsd.org");
-			// TODO: License!
-
 	// FFmpeg copyrights
 	_AddPackageCredit(PackageCredit("FFmpeg")
-		.SetCopyright(B_TRANSLATE(COPYRIGHT_STRING "2000-2014 Fabrice "
+		.SetCopyright(B_TRANSLATE(COPYRIGHT_STRING "2000-2019 Fabrice "
 			"Bellard, et al."))
 		.SetLicenses(kLGPLv21, kLGPLv2, NULL)
 		.SetURL("https://www.ffmpeg.org"));
@@ -1182,8 +1172,8 @@ AboutView::_CreateCreditsView()
 			"Corporation, Maynard, Massachusetts.\n"
 			"All rights reserved."),
 			NULL)
-		.SetLicenses("OpenGroup", "DEC", NULL));
-			// TODO: URL
+		.SetLicenses("OpenGroup", "DEC", NULL)
+		.SetURL("https://xfree86.org"));
 
 	// Bitstream Charter font
 	_AddPackageCredit(PackageCredit("Bitstream Charter font")
@@ -1322,7 +1312,7 @@ AboutView::_CreateCreditsView()
 		.SetLicense(kBSDTwoClause)
 		.SetURL("http://www.acme.com/software/thttpd/"));
 
-#ifdef __INTEL__
+#ifdef __i386__
 	// Udis86 copyrights
 	_AddPackageCredit(PackageCredit("Udis86")
 		.SetCopyright(B_TRANSLATE(COPYRIGHT_STRING "2002-2004 "

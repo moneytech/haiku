@@ -1,11 +1,5 @@
 SubDir HAIKU_TOP src preferences media ;
 
-SetSubDirSupportedPlatformsBeOSCompatible ;
-
-if ! $(TARGET_PLATFORM_HAIKU_COMPATIBLE) {
-	SubDirC++Flags -fmultiple-symbol-spaces ;
-}
-
 UsePrivateHeaders media midi shared ;
 
 Preference Media :

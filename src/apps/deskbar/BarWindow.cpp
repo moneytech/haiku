@@ -68,24 +68,15 @@ All rights reserved.
 #define B_TRANSLATION_CONTEXT "MainWindow"
 
 
-// This is a very ugly hack to be able to call the private
-// BMenuBar::StartMenuBar() method from the TBarWindow::ShowBeMenu() method.
-// Don't do this at home -- but why the hell is this method private?
-#if __MWERKS__
-	#define BMenuBar_StartMenuBar_Hack StartMenuBar__8BMenuBarFlbbP5BRect
-#elif __GNUC__ <= 2
-	#define BMenuBar_StartMenuBar_Hack StartMenuBar__8BMenuBarlbT2P5BRect
-#elif __GNUC__ > 2
-	#if B_HAIKU_64_BIT
-		#define BMenuBar_StartMenuBar_Hack _ZN8BMenuBar12StartMenuBarEibbP5BRect
-	#else
-		#define BMenuBar_StartMenuBar_Hack _ZN8BMenuBar12StartMenuBarElbbP5BRect
-	#endif
-#else
-#	error "You may want to port this ugly hack to your compiler ABI"
-#endif
-extern "C" void
-	BMenuBar_StartMenuBar_Hack(BMenuBar*, int32, bool, bool, BRect*);
+// This is a bit of a hack to be able to call BMenuBar::StartMenuBar(), which
+// is private. Don't do this at home!
+class TStartableMenuBar : public BMenuBar {
+public:
+	TStartableMenuBar();
+	void StartMenuBar(int32 menuIndex, bool sticky = true, bool showMenu = false,
+		BRect* special_rect = NULL) { BMenuBar::StartMenuBar(menuIndex, sticky, showMenu,
+			special_rect); }
+};
 
 
 TDeskbarMenu* TBarWindow::sDeskbarMenu = NULL;
@@ -111,6 +102,8 @@ TBarWindow::TBarWindow()
 
 	RemoveShortcut('H', B_COMMAND_KEY | B_CONTROL_KEY);
 	AddShortcut('F', B_COMMAND_KEY, new BMessage(kFindButton));
+
+	SetSizeLimits();
 }
 
 
@@ -303,6 +296,7 @@ TBarWindow::ScreenChanged(BRect size, color_space depth)
 	BWindow::ScreenChanged(size, depth);
 
 	fBarView->UpdatePlacement();
+	SetSizeLimits();
 }
 
 
@@ -323,14 +317,14 @@ TBarWindow::DeskbarMenu()
 void
 TBarWindow::ShowDeskbarMenu()
 {
-	BMenuBar* menuBar = fBarView->BarMenuBar();
+	TStartableMenuBar* menuBar = (TStartableMenuBar*)fBarView->BarMenuBar();
 	if (menuBar == NULL)
-		menuBar = KeyMenuBar();
+		menuBar = (TStartableMenuBar*)KeyMenuBar();
 
 	if (menuBar == NULL)
 		return;
 
-	BMenuBar_StartMenuBar_Hack(menuBar, 0, true, true, NULL);
+	menuBar->StartMenuBar(0, true, true, NULL);
 }
 
 
@@ -344,7 +338,7 @@ TBarWindow::ShowTeamMenu()
 	if (KeyMenuBar() == NULL)
 		return;
 
-	BMenuBar_StartMenuBar_Hack(KeyMenuBar(), index, true, true, NULL);
+	((TStartableMenuBar*)KeyMenuBar())->StartMenuBar(index, true, true, NULL);
 }
 
 
@@ -653,6 +647,20 @@ bool
 TBarWindow::IsShowingMenu() const
 {
 	return fShowingMenu;
+}
+
+
+void
+TBarWindow::SetSizeLimits()
+{
+	BRect screenFrame = (BScreen(this)).Frame();
+	if (fBarView->Vertical()) {
+		BWindow::SetSizeLimits(gMinimumWindowWidth, gMaximumWindowWidth,
+			kMenuBarHeight - 1, screenFrame.Height());
+	} else {
+		BWindow::SetSizeLimits(screenFrame.Width(), screenFrame.Width(),
+			kMenuBarHeight - 1, kMaximumIconSize + 4);
+	}
 }
 
 

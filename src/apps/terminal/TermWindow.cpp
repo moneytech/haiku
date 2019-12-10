@@ -10,6 +10,7 @@
  *		Kian Duffy, myob@users.sourceforge.net
  *		Daniel Furrer, assimil8or@users.sourceforge.net
  *		John Scipione, jscipione@gmail.com
+ *		Simon South, simon@simonsouth.net
  *		Siarzhuk Zharski, zharik@gmx.li
  */
 
@@ -31,12 +32,14 @@
 #include <Dragger.h>
 #include <File.h>
 #include <FindDirectory.h>
+#include <Keymap.h>
 #include <LayoutBuilder.h>
 #include <LayoutUtils.h>
 #include <Locale.h>
 #include <Menu.h>
 #include <MenuBar.h>
 #include <MenuItem.h>
+#include <ObjectList.h>
 #include <Path.h>
 #include <PopUpMenu.h>
 #include <PrintJob.h>
@@ -46,6 +49,7 @@
 #include <ScrollBar.h>
 #include <ScrollView.h>
 #include <String.h>
+#include <UnicodeChar.h>
 #include <UTF8.h>
 
 #include <AutoLocker.h>
@@ -202,6 +206,9 @@ TermWindow::TermWindow(const BString& title, Arguments* args)
 	fTerminalRoster.SetListener(this);
 	int32 id = fTerminalRoster.ID();
 
+	// fetch the current keymap
+	get_key_map(&fKeymap, &fKeymapChars);
+
 	// apply the title settings
 	fTitle.pattern = title;
 	if (fTitle.pattern.Length() == 0) {
@@ -272,6 +279,9 @@ TermWindow::~TermWindow()
 
 	for (int32 i = 0; Session* session = _SessionAt(i); i++)
 		delete session;
+
+	delete fKeymap;
+	delete[] fKeymapChars;
 }
 
 
@@ -540,6 +550,23 @@ TermWindow::_SetupMenu()
 	AddShortcut('C', B_COMMAND_KEY | B_CONTROL_KEY,
 		new BMessage(SHORTCUT_DEBUG_CAPTURE));
 #endif
+
+	BKeymap keymap;
+	keymap.SetToCurrent();
+	BObjectList<const char> unmodified(3, true);
+	if (keymap.GetModifiedCharacters("+", B_SHIFT_KEY, 0, &unmodified)
+			== B_OK) {
+		int32 count = unmodified.CountItems();
+		for (int32 i = 0; i < count; i++) {
+			uint32 key = BUnicodeChar::FromUTF8(unmodified.ItemAt(i));
+			if (!HasShortcut(key, 0)) {
+				// Add semantic + shortcut, bug #7428
+				AddShortcut(key, B_COMMAND_KEY,
+					new BMessage(kIncreaseFontSize));
+			}
+		}
+	}
+	unmodified.MakeEmpty();
 }
 
 
@@ -673,6 +700,10 @@ TermWindow::MessageReceived(BMessage *message)
 	bool findresult;
 
 	switch (message->what) {
+		case B_KEY_MAP_LOADED:
+			_UpdateKeymap();
+			break;
+
 		case B_COPY:
 			_ActiveTermView()->Copy(be_clipboard);
 			break;
@@ -891,6 +922,18 @@ TermWindow::MessageReceived(BMessage *message)
 				TermView* view = _TermViewAt(i);
 				_TermViewAt(i)->SetTermFont(&font);
 				_ResizeView(view);
+			}
+			break;
+		}
+
+		case MSG_USE_OPTION_AS_META_CHANGED:
+		{
+			bool useOptionAsMetaKey
+				= PrefHandler::Default()->getBool(PREF_USE_OPTION_AS_META);
+
+			for (int32 i = 0; i < fTabView->CountTabs(); i++) {
+				TermView* view = _TermViewAt(i);
+				view->SetUseOptionAsMetaKey(useOptionAsMetaKey);
 			}
 			break;
 		}
@@ -1267,7 +1310,7 @@ TermWindow::_AddTab(Arguments* args, const BString& currentDirectory)
 		_GetPreferredFont(font);
 		view->SetTermFont(&font);
 
-		int width, height;
+		float width, height;
 		view->GetFontSize(&width, &height);
 
 		float minimumHeight = -1;
@@ -1305,6 +1348,10 @@ TermWindow::_AddTab(Arguments* args, const BString& currentDirectory)
 				PrefHandler::Default()->getString(PREF_TEXT_ENCODING));
 		if (charset != NULL)
 			view->SetEncoding(charset->GetConversionID());
+
+		view->SetKeymap(fKeymap, fKeymapChars);
+		view->SetUseOptionAsMetaKey(
+			PrefHandler::Default()->getBool(PREF_USE_OPTION_AS_META));
 
 		_SetTermColors(containerView);
 
@@ -1648,7 +1695,7 @@ TermWindow::NextTermView(TermView* view)
 void
 TermWindow::_ResizeView(TermView *view)
 {
-	int fontWidth, fontHeight;
+	float fontWidth, fontHeight;
 	view->GetFontSize(&fontWidth, &fontHeight);
 
 	float minimumHeight = -1;
@@ -1826,16 +1873,6 @@ TermWindow::_UpdateSessionTitle(int32 index)
 		fTitle.title = windowTitle;
 		SetTitle(fTitle.title);
 	}
-
-	// If fullscreen, add a tooltip with the title and a keyboard shortcut hint
-	if (fFullScreen) {
-		BString toolTip(fTitle.title);
-		toolTip += "\n(";
-		toolTip += B_TRANSLATE("Full screen");
-		toolTip += " (ALT " UTF8_ENTER "))";
-		termView->SetToolTip(toolTip.String());
-	} else
-		termView->SetToolTip((const char *)NULL);
 }
 
 
@@ -2003,4 +2040,19 @@ TermWindow::_MoveWindowInScreen(BWindow* window)
 	BRect frame = window->Frame();
 	BSize screenSize(BScreen(window).Frame().Size());
 	window->MoveTo(BLayoutUtils::MoveIntoFrame(frame, screenSize).LeftTop());
+}
+
+
+void
+TermWindow::_UpdateKeymap()
+{
+	delete fKeymap;
+	delete[] fKeymapChars;
+
+	get_key_map(&fKeymap, &fKeymapChars);
+
+	for (int32 i = 0; i < fTabView->CountTabs(); i++) {
+		TermView* view = _TermViewAt(i);
+		view->SetKeymap(fKeymap, fKeymapChars);
+	}
 }

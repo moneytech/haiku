@@ -40,10 +40,7 @@ struct rw_lock_waiter {
 	bool			writer;
 };
 
-#define MUTEX_FLAG_OWNS_NAME	MUTEX_FLAG_CLONE_NAME
 #define MUTEX_FLAG_RELEASED		0x2
-
-#define RW_LOCK_FLAG_OWNS_NAME	RW_LOCK_FLAG_CLONE_NAME
 
 
 int32
@@ -87,12 +84,14 @@ recursive_lock_destroy(recursive_lock *lock)
 status_t
 recursive_lock_lock(recursive_lock *lock)
 {
-	thread_id thread = thread_get_current_thread_id();
-
+#if KDEBUG
 	if (!gKernelStartup && !are_interrupts_enabled()) {
 		panic("recursive_lock_lock: called with interrupts disabled for lock "
 			"%p (\"%s\")\n", lock, lock->lock.name);
 	}
+#endif
+
+	thread_id thread = thread_get_current_thread_id();
 
 	if (thread != RECURSIVE_LOCK_HOLDER(lock)) {
 		mutex_lock(&lock->lock);
@@ -111,9 +110,12 @@ recursive_lock_trylock(recursive_lock *lock)
 {
 	thread_id thread = thread_get_current_thread_id();
 
-	if (!gKernelStartup && !are_interrupts_enabled())
+#if KDEBUG
+	if (!gKernelStartup && !are_interrupts_enabled()) {
 		panic("recursive_lock_lock: called with interrupts disabled for lock "
 			"%p (\"%s\")\n", lock, lock->lock.name);
+	}
+#endif
 
 	if (thread != RECURSIVE_LOCK_HOLDER(lock)) {
 		status_t status = mutex_trylock(&lock->lock);
@@ -305,6 +307,13 @@ rw_lock_destroy(rw_lock* lock)
 status_t
 _rw_lock_read_lock(rw_lock* lock)
 {
+#if KDEBUG
+	if (!gKernelStartup && !are_interrupts_enabled()) {
+		panic("_rw_lock_read_lock(): called with interrupts disabled for lock %p",
+			lock);
+	}
+#endif
+
 	InterruptsSpinLocker locker(lock->lock);
 
 	// We might be the writer ourselves.
@@ -337,6 +346,13 @@ status_t
 _rw_lock_read_lock_with_timeout(rw_lock* lock, uint32 timeoutFlags,
 	bigtime_t timeout)
 {
+#if KDEBUG
+	if (!gKernelStartup && !are_interrupts_enabled()) {
+		panic("_rw_lock_read_lock_with_timeout(): called with interrupts "
+			"disabled for lock %p", lock);
+	}
+#endif
+
 	InterruptsSpinLocker locker(lock->lock);
 
 	// We might be the writer ourselves.
@@ -449,6 +465,13 @@ _rw_lock_read_unlock(rw_lock* lock)
 status_t
 rw_lock_write_lock(rw_lock* lock)
 {
+#if KDEBUG
+	if (!gKernelStartup && !are_interrupts_enabled()) {
+		panic("_rw_lock_write_lock(): called with interrupts disabled for lock %p",
+			lock);
+	}
+#endif
+
 	InterruptsSpinLocker locker(lock->lock);
 
 	// If we're already the lock holder, we just need to increment the owner
@@ -605,10 +628,9 @@ mutex_destroy(mutex* lock)
 	InterruptsSpinLocker locker(lock->lock);
 
 #if KDEBUG
-	if (lock->waiters != NULL && thread_get_current_thread_id()
-			!= lock->holder) {
-		panic("mutex_destroy(): there are blocking threads, but caller doesn't "
-			"hold the lock (%p)", lock);
+	if (lock->holder != -1 && thread_get_current_thread_id() != lock->holder) {
+		panic("mutex_destroy(): the lock (%p) is held by %" B_PRId32 ", not "
+			"by the caller", lock, lock->holder);
 		if (_mutex_lock(lock, &locker) != B_OK)
 			return;
 		locker.Lock();
@@ -653,20 +675,42 @@ mutex_lock_threads_locked(mutex* lock, InterruptsSpinLocker* locker)
 status_t
 mutex_switch_lock(mutex* from, mutex* to)
 {
+#if KDEBUG
+	if (!gKernelStartup && !are_interrupts_enabled()) {
+		panic("mutex_switch_lock(): called with interrupts disabled "
+			"for locks %p, %p", from, to);
+	}
+#endif
+
 	InterruptsSpinLocker locker(to->lock);
 
-#if !KDEBUG
-	if (atomic_add(&from->count, 1) < -1)
-#endif
-		_mutex_unlock(from);
+	mutex_unlock(from);
 
 	return mutex_lock_threads_locked(to, &locker);
+}
+
+
+void
+mutex_transfer_lock(mutex* lock, thread_id thread)
+{
+#if KDEBUG
+	if (thread_get_current_thread_id() != lock->holder)
+		panic("mutex_transfer_lock(): current thread is not the lock holder!");
+	lock->holder = thread;
+#endif
 }
 
 
 status_t
 mutex_switch_from_read_lock(rw_lock* from, mutex* to)
 {
+#if KDEBUG
+	if (!gKernelStartup && !are_interrupts_enabled()) {
+		panic("mutex_switch_from_read_lock(): called with interrupts disabled "
+			"for locks %p, %p", from, to);
+	}
+#endif
+
 	InterruptsSpinLocker locker(to->lock);
 
 #if KDEBUG_RW_LOCK_DEBUG
@@ -737,8 +781,9 @@ _mutex_lock(mutex* lock, void* _locker)
 
 	status_t error = thread_block();
 #if KDEBUG
-	if (error == B_OK)
-		atomic_set(&lock->holder, waiter.thread->id);
+	if (error == B_OK) {
+		ASSERT(lock->holder == waiter.thread->id);
+	}
 #endif
 	return error;
 }
@@ -769,23 +814,19 @@ _mutex_unlock(mutex* lock)
 		lock->waiters = waiter->next;
 		if (lock->waiters != NULL)
 			lock->waiters->last = waiter->last;
-#if KDEBUG
-		thread_id unblockedThread = waiter->thread->id;
-#endif
-
-		// unblock thread
-		thread_unblock(waiter->thread, B_OK);
 
 #if KDEBUG
 		// Already set the holder to the unblocked thread. Besides that this
 		// actually reflects the current situation, setting it to -1 would
 		// cause a race condition, since another locker could think the lock
 		// is not held by anyone.
-		lock->holder = unblockedThread;
+		lock->holder = waiter->thread->id;
 #endif
+
+		// unblock thread
+		thread_unblock(waiter->thread, B_OK);
 	} else {
-		// We've acquired the spinlock before the locker that is going to wait.
-		// Just mark the lock as released.
+		// Nobody is waiting to acquire this lock. Just mark it as released.
 #if KDEBUG
 		lock->holder = -1;
 #else
@@ -801,12 +842,15 @@ _mutex_trylock(mutex* lock)
 #if KDEBUG
 	InterruptsSpinLocker _(lock->lock);
 
-	if (lock->holder <= 0) {
+	if (lock->holder < 0) {
 		lock->holder = thread_get_current_thread_id();
 		return B_OK;
-	}
-#endif
+	} else if (lock->holder == 0)
+		panic("_mutex_trylock(): using uninitialized lock %p", lock);
 	return B_WOULD_BLOCK;
+#else
+	return mutex_trylock(lock);
+#endif
 }
 
 
@@ -832,7 +876,7 @@ _mutex_lock_with_timeout(mutex* lock, uint32 timeoutFlags, bigtime_t timeout)
 		panic("_mutex_lock(): double lock of %p by thread %" B_PRId32, lock,
 			lock->holder);
 	} else if (lock->holder == 0)
-		panic("_mutex_lock(): using unitialized lock %p", lock);
+		panic("_mutex_lock(): using uninitialized lock %p", lock);
 #else
 	if ((lock->flags & MUTEX_FLAG_RELEASED) != 0) {
 		lock->flags &= ~MUTEX_FLAG_RELEASED;
@@ -860,7 +904,7 @@ _mutex_lock_with_timeout(mutex* lock, uint32 timeoutFlags, bigtime_t timeout)
 
 	if (error == B_OK) {
 #if KDEBUG
-		lock->holder = waiter.thread->id;
+		ASSERT(lock->holder == waiter.thread->id);
 #endif
 	} else {
 		locker.Lock();

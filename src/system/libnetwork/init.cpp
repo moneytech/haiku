@@ -19,31 +19,22 @@
 bool __gR5Compatibility = false;
 addr_t __gNetworkStart;
 addr_t __gNetworkEnd;
-addr_t __gNetAPIStart;
-addr_t __gNetAPIEnd;
 
 
 static void
-find_own_image()
+set_own_image_location(image_id id)
 {
-	int32 cookie = 0;
 	image_info info;
-	while (get_next_image_info(B_CURRENT_TEAM, &cookie, &info) == B_OK) {
-		if (((addr_t)info.text <= (addr_t)find_own_image
-			&& (addr_t)info.text + (addr_t)info.text_size
-				> (addr_t)find_own_image)) {
-			// found us
-			__gNetworkStart = (addr_t)min_c(info.text, info.data);
-			__gNetworkEnd = min_c((addr_t)info.text + info.text_size,
-				(addr_t)info.data + info.data_size);
-			break;
-		}
+	if (get_image_info(id, &info) == B_OK) {
+		__gNetworkStart = (addr_t)min_c(info.text, info.data);
+		__gNetworkEnd = min_c((addr_t)info.text + info.text_size,
+			(addr_t)info.data + info.data_size);
 	}
 }
 
 
 extern "C" void
-initialize_before()
+initialize_before(image_id our_image)
 {
 	// determine if we have to run in BeOS compatibility mode
 
@@ -81,8 +72,7 @@ initialize_before()
 
 		if (enable > 0) {
 			__gR5Compatibility = true;
-			find_own_image();
-			debug_printf("libnetwork.so running in R5 compatibility mode.\n");
+			set_own_image_location(our_image);
 			return;
 		}
 	} while (enable == 0

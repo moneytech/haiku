@@ -102,9 +102,12 @@ intel_get_interrupt_mask(intel_info& info, int pipes, bool enable)
 
 	// Intel changed the PCH register mapping between Sandy Bridge and the
 	// later generations (Ivy Bridge and up).
+	// The PCH register itself does not exist in pre-PCH platforms, and the
+	// previous interrupt register of course also had a different mapping.
 
 	if ((pipes & INTEL_PIPE_A) != 0) {
-		if (info.device_type.InGroup(INTEL_GROUP_SNB))
+		if (info.device_type.InGroup(INTEL_GROUP_SNB)
+				|| info.device_type.InGroup(INTEL_GROUP_ILK))
 			mask |= PCH_INTERRUPT_VBLANK_PIPEA_SNB;
 		else if (hasPCH)
 			mask |= PCH_INTERRUPT_VBLANK_PIPEA;
@@ -113,7 +116,8 @@ intel_get_interrupt_mask(intel_info& info, int pipes, bool enable)
 	}
 
 	if ((pipes & INTEL_PIPE_B) != 0) {
-		if (info.device_type.InGroup(INTEL_GROUP_SNB))
+		if (info.device_type.InGroup(INTEL_GROUP_SNB)
+				|| info.device_type.InGroup(INTEL_GROUP_ILK))
 			mask |= PCH_INTERRUPT_VBLANK_PIPEB_SNB;
 		else if (hasPCH)
 			mask |= PCH_INTERRUPT_VBLANK_PIPEB;
@@ -121,9 +125,17 @@ intel_get_interrupt_mask(intel_info& info, int pipes, bool enable)
 			mask |= INTERRUPT_VBLANK_PIPEB;
 	}
 
+#if 0 // FIXME enable when we support the 3rd pipe
+	if ((pipes & INTEL_PIPE_C) != 0) {
+		// Older generations only had two pipes
+		if (hasPCH && info.device_type.Generation() > 6)
+			mask |= PCH_INTERRUPT_VBLANK_PIPEC;
+	}
+#endif
+
 	// On SandyBridge, there is an extra "global enable" flag, which must also
 	// be set when enabling the interrupts (but not when testing for them).
-	if (enable && info.device_type.InGroup(INTEL_GROUP_SNB))
+	if (enable && info.device_type.InFamily(INTEL_FAMILY_SER5))
 		mask |= PCH_INTERRUPT_GLOBAL_SNB;
 
 	return mask;
@@ -323,7 +335,7 @@ intel_extreme_init(intel_info &info)
 		(void**)&info.shared_info, B_ANY_KERNEL_ADDRESS,
 		ROUND_TO_PAGE_SIZE(sizeof(intel_shared_info)) + 3 * B_PAGE_SIZE,
 		B_FULL_LOCK,
-		B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA | B_USER_CLONEABLE_AREA);
+		B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA | B_CLONEABLE_AREA);
 	if (info.shared_area < B_OK) {
 		ERROR("error: could not create shared area!\n");
 		gGART->unmap_aperture(info.aperture);
@@ -354,7 +366,7 @@ intel_extreme_init(intel_info &info)
 		info.pci->u.h0.base_registers[mmioIndex],
 		info.pci->u.h0.base_register_sizes[mmioIndex],
 		B_ANY_KERNEL_ADDRESS,
-		B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA | B_USER_CLONEABLE_AREA,
+		B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA | B_CLONEABLE_AREA,
 		(void**)&info.registers);
 	if (mmioMapper.InitCheck() < B_OK) {
 		ERROR("error: could not map memory I/O!\n");
@@ -499,6 +511,10 @@ intel_extreme_init(intel_info &info)
 	if (status == B_OK) {
 		info.shared_info->overlay_offset = (addr_t)info.overlay_registers
 			- info.aperture_base;
+		TRACE("Overlay registers mapped at 0x%" B_PRIx32 " = %p - %"
+			B_PRIxADDR " (%" B_PRIxPHYSADDR ")\n",
+			info.shared_info->overlay_offset, info.overlay_registers,
+			info.aperture_base, info.shared_info->physical_overlay_registers);
 		init_overlay_registers(info.overlay_registers);
 	} else {
 		ERROR("error: could not allocate overlay memory! %s\n",
@@ -506,6 +522,7 @@ intel_extreme_init(intel_info &info)
 	}
 
 	// Allocate hardware status page and the cursor memory
+	TRACE("Allocating hardware status page");
 
 	if (intel_allocate_memory(info, B_PAGE_SIZE, 0, B_APERTURE_NEED_PHYSICAL,
 			(addr_t*)info.shared_info->status_page,

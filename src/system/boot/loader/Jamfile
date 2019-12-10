@@ -36,6 +36,7 @@ for platform in [ MultiBootSubDirSetup ] {
 				case "ppc" :
 				{
 					DEFINES +=
+						BOOT_SUPPORT_ELF32 #How to deal with PPC970 ?
 						BOOT_SUPPORT_PARTITION_AMIGA
 						BOOT_SUPPORT_PARTITION_APPLE
 
@@ -56,12 +57,35 @@ for platform in [ MultiBootSubDirSetup ] {
 						DEFINES +=
 							_BOOT_PLATFORM_EFI
 						;
+					} else {
+						DEFINES += BOOT_SUPPORT_ELF32 ;
 					}
 				}
-			}
-
-			if $(TARGET_BOOT_PLATFORM) != efi {
-				DEFINES += BOOT_SUPPORT_ELF32 ;
+				case "sparc" :
+				{
+					DEFINES +=
+						BOOT_SUPPORT_ELF64
+					;
+				}
+				case "risc-v" :
+				{
+					DEFINES +=
+						BOOT_SUPPORT_ELF64
+					;
+				}
+				case "m68k" :
+				{
+					DEFINES += BOOT_SUPPORT_ELF32 ;
+				}
+				case "arm" :
+				{
+					DEFINES += BOOT_SUPPORT_ELF32 ;
+					if $(TARGET_BOOT_PLATFORM) = efi {
+						DEFINES +=
+							_BOOT_PLATFORM_EFI
+						;
+					}
+				}
 			}
 
 			local kernelC++Header = [ FDirName $(HAIKU_TOP) headers private kernel util

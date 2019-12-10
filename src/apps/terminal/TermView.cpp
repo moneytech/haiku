@@ -9,6 +9,7 @@
  *		Kian Duffy, myob@users.sourceforge.net
  *		Y.Hayakawa, hida@sawada.riec.tohoku.ac.jp
  *		Jonathan Schleifer, js@webkeks.org
+ *		Simon South, simon@simonsouth.net
  *		Ingo Weinhold, ingo_weinhold@gmx.de
  *		Clemens Zeidler, haiku@Clemens-Zeidler.de
  *		Siarzhuk Zharski, zharik@gmx.li
@@ -173,7 +174,8 @@ TermView::TermView(BRect frame, const ShellParameters& shellParameters,
 	fReportX10MouseEvent(false),
 	fReportNormalMouseEvent(false),
 	fReportButtonMouseEvent(false),
-	fReportAnyMouseEvent(false)
+	fReportAnyMouseEvent(false),
+	fEnableExtendedMouseCoordinates(false)
 {
 	status_t status = _InitObject(shellParameters);
 	if (status != B_OK)
@@ -196,7 +198,8 @@ TermView::TermView(int rows, int columns,
 	fReportX10MouseEvent(false),
 	fReportNormalMouseEvent(false),
 	fReportButtonMouseEvent(false),
-	fReportAnyMouseEvent(false)
+	fReportAnyMouseEvent(false),
+	fEnableExtendedMouseCoordinates(false)
 {
 	status_t status = _InitObject(shellParameters);
 	if (status != B_OK)
@@ -229,7 +232,8 @@ TermView::TermView(BMessage* archive)
 	fReportX10MouseEvent(false),
 	fReportNormalMouseEvent(false),
 	fReportButtonMouseEvent(false),
-	fReportAnyMouseEvent(false)
+	fReportAnyMouseEvent(false),
+	fEnableExtendedMouseCoordinates(false)
 {
 	BRect frame = Bounds();
 
@@ -283,7 +287,7 @@ TermView::_InitObject(const ShellParameters& shellParameters)
 	fFontHeight = 0;
 	fFontAscent = 0;
 	fEmulateBold = false;
-	fAllowBold = false;
+	fAllowBold = true;
 	fFrameResized = false;
 	fResizeViewDisableCount = 0;
 	fLastActivityTime = 0;
@@ -307,10 +311,16 @@ TermView::_InitObject(const ShellParameters& shellParameters)
 	fSelection.SetHighlighter(this);
 	fSelection.SetRange(TermPos(0, 0), TermPos(0, 0));
 	fPrevPos = TermPos(-1, - 1);
+	fKeymap = NULL;
+	fKeymapChars = NULL;
+	fUseOptionAsMetaKey = false;
+	fInterpretMetaKey = true;
+	fMetaKeySendsEscape = true;
 	fReportX10MouseEvent = false;
 	fReportNormalMouseEvent = false;
 	fReportButtonMouseEvent = false;
 	fReportAnyMouseEvent = false;
+	fEnableExtendedMouseCoordinates = false;
 	fMouseClipboard = be_clipboard;
 	fDefaultState = new(std::nothrow) DefaultState(this);
 	fSelectState = new(std::nothrow) SelectState(this);
@@ -545,7 +555,7 @@ TermView::TerminalName() const
 
 //! Get width and height for terminal font
 void
-TermView::GetFontSize(int* _width, int* _height)
+TermView::GetFontSize(float* _width, float* _height)
 {
 	*_width = fFontWidth;
 	*_height = fFontHeight;
@@ -631,8 +641,8 @@ void
 TermView::GetTermSizeFromRect(const BRect &rect, int *_rows,
 	int *_columns)
 {
-	int columns = (rect.IntegerWidth() + 1) / fFontWidth;
-	int rows = (rect.IntegerHeight() + 1) / fFontHeight;
+	int columns = int((rect.IntegerWidth() + 1) / fFontWidth);
+	int rows = int((rect.IntegerHeight() + 1) / fFontHeight);
 
 	if (_rows)
 		*_rows = rows;
@@ -720,6 +730,33 @@ TermView::SetEncoding(int encoding)
 
 
 void
+TermView::SetKeymap(const key_map* keymap, const char* chars)
+{
+	delete fKeymap;
+	delete[] fKeymapChars;
+
+	fKeymap = keymap;
+	fKeymapChars = chars;
+
+	fKeymapTableForModifiers.Put(B_SHIFT_KEY,
+		&fKeymap->shift_map);
+	fKeymapTableForModifiers.Put(B_CAPS_LOCK,
+		&fKeymap->caps_map);
+	fKeymapTableForModifiers.Put(B_CAPS_LOCK | B_SHIFT_KEY,
+		&fKeymap->caps_shift_map);
+	fKeymapTableForModifiers.Put(B_CONTROL_KEY,
+		&fKeymap->control_map);
+}
+
+
+void
+TermView::SetUseOptionAsMetaKey(bool enable)
+{
+	fUseOptionAsMetaKey = enable && fKeymap != NULL && fKeymapChars != NULL;
+}
+
+
+void
 TermView::SetMouseClipboard(BClipboard *clipboard)
 {
 	fMouseClipboard = clipboard;
@@ -738,7 +775,7 @@ TermView::GetTermFont(BFont *font) const
 void
 TermView::SetTermFont(const BFont *font)
 {
-	int halfWidth = 0;
+	float halfWidth = 0;
 
 	fHalfFont = font;
 	fBoldFont = font;
@@ -752,7 +789,7 @@ TermView::SetTermFont(const BFont *font)
 	for (int c = 0x20; c <= 0x7e; c++) {
 		char buf[4];
 		sprintf(buf, "%c", c);
-		int tmpWidth = (int)fHalfFont.StringWidth(buf);
+		float tmpWidth = fHalfFont.StringWidth(buf);
 		if (tmpWidth > halfWidth)
 			halfWidth = tmpWidth;
 	}
@@ -958,7 +995,7 @@ TermView::_Deactivate()
 
 //! Draw part of a line in the given view.
 void
-TermView::_DrawLinePart(int32 x1, int32 y1, uint32 attr, char *buf,
+TermView::_DrawLinePart(float x1, float y1, uint32 attr, char *buf,
 	int32 width, Highlight* highlight, bool cursor, BView *inView)
 {
 	if (highlight != NULL)
@@ -968,8 +1005,8 @@ TermView::_DrawLinePart(int32 x1, int32 y1, uint32 attr, char *buf,
 		? &fBoldFont : &fHalfFont);
 
 	// Set pen point
-	int x2 = x1 + fFontWidth * width;
-	int y2 = y1 + fFontHeight;
+	float x2 = x1 + fFontWidth * width;
+	float y2 = y1 + fFontHeight;
 
 	rgb_color rgb_fore = fTextForeColor;
 	rgb_color rgb_back = fTextBackColor;
@@ -1238,8 +1275,8 @@ TermView::DetachedFromWindow()
 void
 TermView::Draw(BRect updateRect)
 {
-	int32 x1 = (int32)updateRect.left / fFontWidth;
-	int32 x2 = std::min((int)updateRect.right / fFontWidth, fColumns - 1);
+	int32 x1 = (int32)(updateRect.left / fFontWidth);
+	int32 x2 = std::min((int)(updateRect.right / fFontWidth), fColumns - 1);
 
 	int32 firstVisible = _LineAt(0);
 	int32 y1 = _LineAt(updateRect.top);
@@ -1444,8 +1481,8 @@ void
 TermView::FrameResized(float width, float height)
 {
 //debug_printf("TermView::FrameResized(%f, %f)\n", width, height);
-	int32 columns = ((int32)width + 1) / fFontWidth;
-	int32 rows = ((int32)height + 1) / fFontHeight;
+	int32 columns = (int32)((width + 1) / fFontWidth);
+	int32 rows = (int32)((height + 1) / fFontHeight);
 
 	if (columns == fColumns && rows == fRows)
 		return;
@@ -1801,20 +1838,33 @@ TermView::MessageReceived(BMessage *msg)
 				fCursorHidden = hidden;
 			break;
 		}
+		case MSG_ENABLE_META_KEY:
+		{
+			bool enable;
+			if (msg->FindBool("enableInterpretMetaKey", &enable) == B_OK)
+				fInterpretMetaKey = enable;
+
+			if (msg->FindBool("enableMetaKeySendsEscape", &enable) == B_OK)
+				fMetaKeySendsEscape = enable;
+			break;
+		}
 		case MSG_REPORT_MOUSE_EVENT:
 		{
-			bool report;
-			if (msg->FindBool("reportX10MouseEvent", &report) == B_OK)
-				fReportX10MouseEvent = report;
+			bool value;
+			if (msg->FindBool("reportX10MouseEvent", &value) == B_OK)
+				fReportX10MouseEvent = value;
 
-			if (msg->FindBool("reportNormalMouseEvent", &report) == B_OK)
-				fReportNormalMouseEvent = report;
+			if (msg->FindBool("reportNormalMouseEvent", &value) == B_OK)
+				fReportNormalMouseEvent = value;
 
-			if (msg->FindBool("reportButtonMouseEvent", &report) == B_OK)
-				fReportButtonMouseEvent = report;
+			if (msg->FindBool("reportButtonMouseEvent", &value) == B_OK)
+				fReportButtonMouseEvent = value;
 
-			if (msg->FindBool("reportAnyMouseEvent", &report) == B_OK)
-				fReportAnyMouseEvent = report;
+			if (msg->FindBool("reportAnyMouseEvent", &value) == B_OK)
+				fReportAnyMouseEvent = value;
+
+			if (msg->FindBool("enableExtendedMouseCoordinates", &value) == B_OK)
+				fEnableExtendedMouseCoordinates = value;
 			break;
 		}
 		case MSG_REMOVE_RESIZE_VIEW_IF_NEEDED:
@@ -2364,30 +2414,65 @@ void
 TermView::_SendMouseEvent(int32 buttons, int32 mode, int32 x, int32 y,
 	bool motion)
 {
-	char xtermButtons;
-	if (buttons == B_PRIMARY_MOUSE_BUTTON)
-		xtermButtons = 32 + 0;
-	else if (buttons == B_SECONDARY_MOUSE_BUTTON)
-		xtermButtons = 32 + 1;
-	else if (buttons == B_TERTIARY_MOUSE_BUTTON)
-		xtermButtons = 32 + 2;
-	else
-		xtermButtons = 32 + 3;
+	if (!fEnableExtendedMouseCoordinates) {
+		char xtermButtons;
+		if (buttons == B_PRIMARY_MOUSE_BUTTON)
+			xtermButtons = 32 + 0;
+		else if (buttons == B_SECONDARY_MOUSE_BUTTON)
+			xtermButtons = 32 + 1;
+		else if (buttons == B_TERTIARY_MOUSE_BUTTON)
+			xtermButtons = 32 + 2;
+		else
+			xtermButtons = 32 + 3;
 
-	if (motion)
-		xtermButtons += 32;
+		if (motion)
+			xtermButtons += 32;
 
-	char xtermX = x + 1 + 32;
-	char xtermY = y + 1 + 32;
+		char xtermX = x + 1 + 32;
+		char xtermY = y + 1 + 32;
 
-	char destBuffer[6];
-	destBuffer[0] = '\033';
-	destBuffer[1] = '[';
-	destBuffer[2] = 'M';
-	destBuffer[3] = xtermButtons;
-	destBuffer[4] = xtermX;
-	destBuffer[5] = xtermY;
-	fShell->Write(destBuffer, 6);
+		char destBuffer[6];
+		destBuffer[0] = '\033';
+		destBuffer[1] = '[';
+		destBuffer[2] = 'M';
+		destBuffer[3] = xtermButtons;
+		destBuffer[4] = xtermX;
+		destBuffer[5] = xtermY;
+		fShell->Write(destBuffer, 6);
+	} else {
+		char xtermButtons;
+		if (buttons == B_PRIMARY_MOUSE_BUTTON)
+			xtermButtons = 0;
+		else if (buttons == B_SECONDARY_MOUSE_BUTTON)
+			xtermButtons = 1;
+		else if (buttons == B_TERTIARY_MOUSE_BUTTON)
+			xtermButtons = 2;
+		else
+			xtermButtons = 3;
+
+		if (motion)
+			xtermButtons += 32;
+
+		int16 xtermX = x + 1;
+		int16 xtermY = y + 1;
+
+		char destBuffer[13];
+		destBuffer[0] = '\033';
+		destBuffer[1] = '[';
+		destBuffer[2] = '<';
+		destBuffer[3] = xtermButtons + '0';
+		destBuffer[4] = ';';
+		destBuffer[5] = xtermX / 100 % 10 + '0';
+		destBuffer[6] = xtermX / 10 % 10 + '0';
+		destBuffer[7] = xtermX % 10 + '0';
+		destBuffer[8] = ';';
+		destBuffer[9] = xtermY / 100 % 10 + '0';
+		destBuffer[10] = xtermY / 10 % 10 + '0';
+		destBuffer[11] = xtermY % 10 + '0';
+		// No support for button press/release
+		destBuffer[12] = 'M';
+		fShell->Write(destBuffer, 13);
+	}
 }
 
 

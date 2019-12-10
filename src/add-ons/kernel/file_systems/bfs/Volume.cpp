@@ -1,5 +1,5 @@
 /*
- * Copyright 2001-2017, Axel Dörfler, axeld@pinc-software.de.
+ * Copyright 2001-2019, Axel Dörfler, axeld@pinc-software.de.
  * This file may be used under the terms of the MIT License.
  */
 
@@ -8,6 +8,7 @@
 
 
 #include "Attribute.h"
+#include "CheckVisitor.h"
 #include "Debug.h"
 #include "Inode.h"
 #include "Journal.h"
@@ -101,7 +102,7 @@ DeviceOpener::Open(const char* device, int mode)
 		if (_IsReadWrite(mode)) {
 			// check out if the device really allows for read/write access
 			device_geometry geometry;
-			if (!ioctl(fDevice, B_GET_GEOMETRY, &geometry)) {
+			if (!ioctl(fDevice, B_GET_GEOMETRY, &geometry, sizeof(device_geometry))) {
 				if (geometry.read_only) {
 					// reopen device read-only
 					close(fDevice);
@@ -161,7 +162,7 @@ status_t
 DeviceOpener::GetSize(off_t* _size, uint32* _blockSize)
 {
 	device_geometry geometry;
-	if (ioctl(fDevice, B_GET_GEOMETRY, &geometry) < 0) {
+	if (ioctl(fDevice, B_GET_GEOMETRY, &geometry, sizeof(device_geometry)) < 0) {
 		// maybe it's just a file
 		struct stat stat;
 		if (fstat(fDevice, &stat) < 0)
@@ -282,7 +283,8 @@ Volume::Volume(fs_volume* volume)
 	fIndicesNode(NULL),
 	fDirtyCachedBlocks(0),
 	fFlags(0),
-	fCheckingThread(-1)
+	fCheckingThread(-1),
+	fCheckVisitor(NULL)
 {
 	mutex_init(&fLock, "bfs volume");
 	mutex_init(&fQueryLock, "bfs queries");
@@ -357,8 +359,11 @@ Volume::Mount(const char* deviceName, uint32 flags)
 	off_t diskSize;
 	if (opener.GetSize(&diskSize, &fDeviceBlockSize) != B_OK)
 		RETURN_ERROR(B_ERROR);
-	if (diskSize < (NumBlocks() << BlockShift()))
+	if (diskSize < (NumBlocks() << BlockShift())) {
+		FATAL(("Disk size (%" B_PRIdOFF " bytes) < file system size (%"
+			B_PRIdOFF " bytes)!\n", diskSize, NumBlocks() << BlockShift()));
 		RETURN_ERROR(B_BAD_VALUE);
+	}
 
 	// set the current log pointers, so that journaling will work correctly
 	fLogStart = fSuperBlock.LogStart();
@@ -430,6 +435,9 @@ Volume::Mount(const char* deviceName, uint32 flags)
 	} else {
 		status = B_BAD_VALUE;
 		FATAL(("could not create root node!\n"));
+
+		// We need to wait for the block allocator to finish
+		fBlockAllocator.Uninitialize();
 		return status;
 	}
 
@@ -619,6 +627,28 @@ Volume::RemoveQuery(Query* query)
 }
 
 
+status_t
+Volume::CreateCheckVisitor()
+{
+	if (fCheckVisitor != NULL)
+		return B_BUSY;
+
+	fCheckVisitor = new(std::nothrow) ::CheckVisitor(this);
+	if (fCheckVisitor == NULL)
+		return B_NO_MEMORY;
+
+	return B_OK;
+}
+
+
+void
+Volume::DeleteCheckVisitor()
+{
+	delete fCheckVisitor;
+	fCheckVisitor = NULL;
+}
+
+
 //	#pragma mark - Disk scanning and initialization
 
 
@@ -798,7 +828,11 @@ Volume::_EraseUnusedBootBlock()
 {
 	const int32 blockSize = 512;
 	const char emptySector[blockSize] = { 0 };
+	// Erase boot block if any
 	if (write_pos(fDevice, 0, emptySector, blockSize) != blockSize)
+		return B_IO_ERROR;
+	// Erase ext2 superblock if any
+	if (write_pos(fDevice, 1024, emptySector, blockSize) != blockSize)
 		return B_IO_ERROR;
 
 	return B_OK;

@@ -9,7 +9,7 @@ boot loader, kernel, the system libraries, servers, and applications."
 packager		"The Haiku build system"
 vendor			"Haiku Project"
 
-copyrights		"2001-2018 Haiku, Inc. et al"
+copyrights		"2001-2019 Haiku, Inc. et al"
 licenses {
 	MIT
 	"GNU LGPL v2.1"
@@ -21,9 +21,7 @@ provides {
 	cmd:arp
 	cmd:chop
 	cmd:clear
-	cmd:compress
 	cmd:df
-	cmd:ftp
 	cmd:ftpd
 	cmd:hd
 	cmd:hey
@@ -40,7 +38,6 @@ provides {
 	cmd:telnet
 	cmd:telnetd
 	cmd:top
-	cmd:tput
 	cmd:traceroute
 	cmd:trash
 	cmd:unchop
@@ -57,6 +54,9 @@ requires {
 	cmd:gunzip
 	cmd:tar
 	cmd:unzip
+#endif
+#ifdef HAIKU_BUILD_FEATURE_M68K_LIBEDIT_ENABLED
+	lib:libedit
 #endif
 	lib:libfreetype
 	lib:libfontconfig

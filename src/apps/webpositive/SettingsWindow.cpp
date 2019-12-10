@@ -1,6 +1,6 @@
 /*
- * Copyright (C) 2010 Stephan Aßmus <superstippi@gmx.de>
- *
+ * Copyright 2010 Stephan Aßmus <superstippi@gmx.de>
+ * Copyright 2019, Haiku, Inc.
  * All rights reserved. Distributed under the terms of the MIT License.
  */
 #include "SettingsWindow.h"
@@ -8,6 +8,7 @@
 #include <Button.h>
 #include <CheckBox.h>
 #include <ControlLook.h>
+#include <FilePanel.h>
 #include <GridLayoutBuilder.h>
 #include <GroupLayout.h>
 #include <GroupLayoutBuilder.h>
@@ -50,6 +51,7 @@ enum {
 	MSG_DOWNLOAD_FOLDER_CHANGED					= 'dnfc',
 	MSG_NEW_WINDOWS_BEHAVIOR_CHANGED			= 'nwbc',
 	MSG_NEW_TABS_BEHAVIOR_CHANGED				= 'ntbc',
+	MSG_START_UP_BEHAVIOR_CHANGED				= 'subc',
 	MSG_HISTORY_MENU_DAYS_CHANGED				= 'digm',
 	MSG_TAB_DISPLAY_BEHAVIOR_CHANGED			= 'tdbc',
 	MSG_AUTO_HIDE_INTERFACE_BEHAVIOR_CHANGED	= 'ahic',
@@ -70,6 +72,9 @@ enum {
 	MSG_USE_PROXY_AUTH_CHANGED					= 'upsa',
 	MSG_PROXY_USERNAME_CHANGED					= 'psuc',
 	MSG_PROXY_PASSWORD_CHANGED					= 'pswc',
+
+	MSG_CHOOSE_DOWNLOAD_FOLDER					= 'swop',
+	MSG_HANDLE_DOWNLOAD_FOLDER					= 'oprs',
 };
 
 static const int32 kDefaultFontSize = 14;
@@ -87,6 +92,8 @@ SettingsWindow::SettingsWindow(BRect frame, SettingsMessage* settings)
 		new BMessage(MSG_CANCEL));
 	fRevertButton = new BButton(B_TRANSLATE("Revert"),
 		new BMessage(MSG_REVERT));
+
+	fOpenFilePanel = NULL;
 
 	float spacing = be_control_look->DefaultItemSpacing();
 
@@ -144,6 +151,7 @@ SettingsWindow::~SettingsWindow()
 	delete fSansSerifFontView;
 	RemoveHandler(fFixedFontView);
 	delete fFixedFontView;
+	delete fOpenFilePanel;
 }
 
 
@@ -161,10 +169,15 @@ SettingsWindow::MessageReceived(BMessage* message)
 		case MSG_REVERT:
 			_RevertSettings();
 			break;
-
+		case MSG_CHOOSE_DOWNLOAD_FOLDER:
+			_ChooseDownloadFolder(message);
+			break;
+		case MSG_HANDLE_DOWNLOAD_FOLDER:
+			_HandleDownloadPanelResult(fOpenFilePanel, message);
+			break;
 		case MSG_STANDARD_FONT_SIZE_SELECTED:
 		{
-			int32 size = _SizesMenuValue(fStandardSizesMenu->Menu());
+			int32 size = fStandardSizesSpinner->Value();
 			fStandardFontView->SetSize(size);
 			fSerifFontView->SetSize(size);
 			fSansSerifFontView->SetSize(size);
@@ -173,7 +186,7 @@ SettingsWindow::MessageReceived(BMessage* message)
 		}
 		case MSG_FIXED_FONT_SIZE_SELECTED:
 		{
-			int32 size = _SizesMenuValue(fFixedSizesMenu->Menu());
+			int32 size = fFixedSizesSpinner->Value();
 			fFixedFontView->SetSize(size);
 			_ValidateControlsEnabledStatus();
 			break;
@@ -182,6 +195,7 @@ SettingsWindow::MessageReceived(BMessage* message)
 		case MSG_START_PAGE_CHANGED:
 		case MSG_SEARCH_PAGE_CHANGED:
 		case MSG_DOWNLOAD_FOLDER_CHANGED:
+		case MSG_START_UP_BEHAVIOR_CHANGED:
 		case MSG_NEW_WINDOWS_BEHAVIOR_CHANGED:
 		case MSG_NEW_TABS_BEHAVIOR_CHANGED:
 		case MSG_HISTORY_MENU_DAYS_CHANGED:
@@ -264,6 +278,13 @@ SettingsWindow::_CreateGeneralPage(float spacing)
 	fDownloadFolderControl->SetText(
 		fSettings->GetValue(kSettingsKeyDownloadPath, kDefaultDownloadPath));
 
+	fStartUpBehaviorResumePriorSession = new BMenuItem(
+		B_TRANSLATE("Resume prior session"),
+		new BMessage(MSG_START_UP_BEHAVIOR_CHANGED));
+	fStartUpBehaviorStartNewSession = new BMenuItem(
+		B_TRANSLATE("Start new session"),
+		new BMessage(MSG_START_UP_BEHAVIOR_CHANGED));
+
 	fNewWindowBehaviorOpenHomeItem = new BMenuItem(
 		B_TRANSLATE("Open start page"),
 		new BMessage(MSG_NEW_WINDOWS_BEHAVIOR_CHANGED));
@@ -286,9 +307,19 @@ SettingsWindow::_CreateGeneralPage(float spacing)
 	fNewTabBehaviorOpenBlankItem = new BMenuItem(
 		B_TRANSLATE("Open blank page"),
 		new BMessage(MSG_NEW_TABS_BEHAVIOR_CHANGED));
+	fChooseButton = new BButton(B_TRANSLATE("Browse" B_UTF8_ELLIPSIS),
+		new BMessage(MSG_CHOOSE_DOWNLOAD_FOLDER));
 
 	fNewWindowBehaviorOpenHomeItem->SetMarked(true);
 	fNewTabBehaviorOpenBlankItem->SetMarked(true);
+	fStartUpBehaviorResumePriorSession->SetMarked(true);
+
+	BPopUpMenu* startUpBehaviorMenu = new BPopUpMenu("Start up");
+	startUpBehaviorMenu->AddItem(fStartUpBehaviorResumePriorSession);
+	startUpBehaviorMenu->AddItem(fStartUpBehaviorStartNewSession);
+	fStartUpBehaviorMenu = new BMenuField("start up behavior",
+		B_TRANSLATE("Start up:"), startUpBehaviorMenu);
+
 
 	BPopUpMenu* newWindowBehaviorMenu = new BPopUpMenu("New windows");
 	newWindowBehaviorMenu->AddItem(fNewWindowBehaviorOpenHomeItem);
@@ -340,14 +371,18 @@ SettingsWindow::_CreateGeneralPage(float spacing)
 			.Add(fSearchPageControl->CreateLabelLayoutItem(), 0, 1)
 			.Add(fSearchPageControl->CreateTextViewLayoutItem(), 1, 1)
 
-			.Add(fDownloadFolderControl->CreateLabelLayoutItem(), 0, 2)
-			.Add(fDownloadFolderControl->CreateTextViewLayoutItem(), 1, 2)
+			.Add(fStartUpBehaviorMenu->CreateLabelLayoutItem(), 0, 2)
+			.Add(fStartUpBehaviorMenu->CreateMenuBarLayoutItem(), 1, 2)
 
 			.Add(fNewWindowBehaviorMenu->CreateLabelLayoutItem(), 0, 3)
 			.Add(fNewWindowBehaviorMenu->CreateMenuBarLayoutItem(), 1, 3)
 
 			.Add(fNewTabBehaviorMenu->CreateLabelLayoutItem(), 0, 4)
 			.Add(fNewTabBehaviorMenu->CreateMenuBarLayoutItem(), 1, 4)
+
+			.Add(fDownloadFolderControl->CreateLabelLayoutItem(), 0, 5)
+			.Add(fDownloadFolderControl->CreateTextViewLayoutItem(), 1, 5)
+			.Add(fChooseButton, 2, 5)
 		)
 		.Add(BSpaceLayoutItem::CreateVerticalStrut(spacing))
 		.Add(new BSeparatorView(B_HORIZONTAL, B_PLAIN_BORDER))
@@ -358,7 +393,10 @@ SettingsWindow::_CreateGeneralPage(float spacing)
 		.Add(fShowHomeButton)
 		.Add(BSpaceLayoutItem::CreateVerticalStrut(spacing))
 
-		.Add(fDaysInHistory)
+		.AddGroup(B_HORIZONTAL)
+			.Add(fDaysInHistory)
+			.AddGlue()
+			.End()
 		.AddGlue()
 		.SetInsets(B_USE_WINDOW_SPACING, B_USE_WINDOW_SPACING,
 			B_USE_WINDOW_SPACING, B_USE_DEFAULT_SPACING)
@@ -382,26 +420,21 @@ SettingsWindow::_CreateFontsPage(float spacing)
 	fFixedFontView = new FontSelectionView("fixed",
 		B_TRANSLATE("Fixed font:"), true, be_fixed_font);
 
-	fStandardSizesMenu =  new BMenuField("standard font size",
-		B_TRANSLATE("Default standard font size:"), new BPopUpMenu("sizes"),
-		B_WILL_DRAW);
-	fStandardSizesMenu->SetAlignment(B_ALIGN_RIGHT);
+	fStandardSizesSpinner = new BSpinner("standard font size",
+		B_TRANSLATE("Default standard font size:"),
+		new BMessage(MSG_STANDARD_FONT_SIZE_SELECTED));
+	fStandardSizesSpinner->SetAlignment(B_ALIGN_RIGHT);
 
-	_BuildSizesMenu(fStandardSizesMenu->Menu(),
-		MSG_STANDARD_FONT_SIZE_SELECTED);
-
-	fFixedSizesMenu =  new BMenuField("fixed font size",
-		B_TRANSLATE("Default fixed font size:"), new BPopUpMenu("sizes"),
-		B_WILL_DRAW);
-	fFixedSizesMenu->SetAlignment(B_ALIGN_RIGHT);
-
-	_BuildSizesMenu(fFixedSizesMenu->Menu(), MSG_FIXED_FONT_SIZE_SELECTED);
+	fFixedSizesSpinner = new BSpinner("fixed font size",
+		B_TRANSLATE("Default fixed font size:"),
+		new BMessage(MSG_FIXED_FONT_SIZE_SELECTED));
+	fFixedSizesSpinner->SetAlignment(B_ALIGN_RIGHT);
 
 	BView* view = BGridLayoutBuilder(spacing / 2, spacing / 2)
 		.Add(fStandardFontView->CreateFontsLabelLayoutItem(), 0, 0)
 		.Add(fStandardFontView->CreateFontsMenuBarLayoutItem(), 1, 0)
-		.Add(fStandardSizesMenu->CreateLabelLayoutItem(), 2, 0)
-		.Add(fStandardSizesMenu->CreateMenuBarLayoutItem(), 3, 0)
+		.Add(fStandardSizesSpinner->CreateLabelLayoutItem(), 2, 0)
+		.Add(fStandardSizesSpinner->CreateTextViewLayoutItem(), 3, 0)
 		.Add(fStandardFontView->PreviewBox(), 1, 1, 3)
 		.Add(fSerifFontView->CreateFontsLabelLayoutItem(), 0, 2)
 		.Add(fSerifFontView->CreateFontsMenuBarLayoutItem(), 1, 2)
@@ -412,8 +445,8 @@ SettingsWindow::_CreateFontsPage(float spacing)
 		.Add(BSpaceLayoutItem::CreateVerticalStrut(spacing / 2), 0, 6, 2)
 		.Add(fFixedFontView->CreateFontsLabelLayoutItem(), 0, 7)
 		.Add(fFixedFontView->CreateFontsMenuBarLayoutItem(), 1, 7)
-		.Add(fFixedSizesMenu->CreateLabelLayoutItem(), 2, 7)
-		.Add(fFixedSizesMenu->CreateMenuBarLayoutItem(), 3, 7)
+		.Add(fFixedSizesSpinner->CreateLabelLayoutItem(), 2, 7)
+		.Add(fFixedSizesSpinner->CreateTextViewLayoutItem(), 3, 7)
 		.Add(fFixedFontView->PreviewBox(), 1, 8, 3)
 		.SetInsets(B_USE_WINDOW_SPACING, B_USE_WINDOW_SPACING,
 			B_USE_WINDOW_SPACING, B_USE_DEFAULT_SPACING)
@@ -493,33 +526,6 @@ SettingsWindow::_CreateProxyPage(float spacing)
 
 
 void
-SettingsWindow::_BuildSizesMenu(BMenu* menu, uint32 messageWhat)
-{
-	const float kMinSize = 8.0;
-	const float kMaxSize = 18.0;
-
-	const int32 kSizes[] = {7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18, 21, 24, 0};
-
-	for (int32 i = 0; kSizes[i]; i++) {
-		int32 size = kSizes[i];
-		if (size < kMinSize || size > kMaxSize)
-			continue;
-
-		char label[32];
-		snprintf(label, sizeof(label), "%" B_PRId32, size);
-
-		BMessage* message = new BMessage(messageWhat);
-		message->AddInt32("size", size);
-
-		BMenuItem* item = new BMenuItem(label, message);
-
-		menu->AddItem(item);
-		item->SetTarget(this);
-	}
-}
-
-
-void
 SettingsWindow::_SetupFontSelectionView(FontSelectionView* view,
 	BMessage* message)
 {
@@ -569,6 +575,11 @@ SettingsWindow::_CanApplySettings() const
 	canApply = canApply || (fDaysInHistory->Value()
 		!= BrowsingHistory::DefaultInstance()->MaxHistoryItemAge());
 
+	// Start up policy
+	canApply = canApply || (_StartUpPolicy()
+		!= fSettings->GetValue(kSettingsKeyStartUpPolicy,
+			(uint32)ResumePriorSession));
+
 	// New window policy
 	canApply = canApply || (_NewWindowPolicy()
 		!= fSettings->GetValue(kSettingsKeyNewWindowPolicy,
@@ -592,10 +603,10 @@ SettingsWindow::_CanApplySettings() const
 	canApply = canApply || (fFixedFontView->Font()
 		!= fSettings->GetValue("fixed font", *be_fixed_font));
 
-	canApply = canApply || (_SizesMenuValue(fStandardSizesMenu->Menu())
+	canApply = canApply || (fStandardSizesSpinner->Value()
 		!= fSettings->GetValue("standard font size", kDefaultFontSize));
 
-	canApply = canApply || (_SizesMenuValue(fFixedSizesMenu->Menu())
+	canApply = canApply || (fFixedSizesSpinner->Value()
 		!= fSettings->GetValue("fixed font size", kDefaultFontSize));
 
 	// Proxy settings
@@ -640,6 +651,7 @@ SettingsWindow::_ApplySettings()
 		fShowHomeButton->Value() == B_CONTROL_ON);
 
 	// New page policies
+	fSettings->SetValue(kSettingsKeyStartUpPolicy, _StartUpPolicy());
 	fSettings->SetValue(kSettingsKeyNewWindowPolicy, _NewWindowPolicy());
 	fSettings->SetValue(kSettingsKeyNewTabPolicy, _NewTabPolicy());
 
@@ -648,8 +660,8 @@ SettingsWindow::_ApplySettings()
 	fSettings->SetValue("serif font", fSerifFontView->Font());
 	fSettings->SetValue("sans serif font", fSansSerifFontView->Font());
 	fSettings->SetValue("fixed font", fFixedFontView->Font());
-	int32 standardFontSize = _SizesMenuValue(fStandardSizesMenu->Menu());
-	int32 fixedFontSize = _SizesMenuValue(fFixedSizesMenu->Menu());
+	int32 standardFontSize = fStandardSizesSpinner->Value();
+	int32 fixedFontSize = fFixedSizesSpinner->Value();
 	fSettings->SetValue("standard font size", standardFontSize);
 	fSettings->SetValue("fixed font size", fixedFontSize);
 
@@ -722,6 +734,19 @@ SettingsWindow::_RevertSettings()
 	fDaysInHistory->SetValue(
 		BrowsingHistory::DefaultInstance()->MaxHistoryItemAge());
 
+	// Start Up policy
+	uint32 startUpPolicy = fSettings->GetValue(kSettingsKeyStartUpPolicy,
+		(uint32)ResumePriorSession);
+	switch (startUpPolicy) {
+		default:
+		case ResumePriorSession:
+			fStartUpBehaviorResumePriorSession->SetMarked(true);
+			break;
+		case StartNewSession:
+			fStartUpBehaviorStartNewSession->SetMarked(true);
+			break;
+	}
+
 	// New window policy
 	uint32 newWindowPolicy = fSettings->GetValue(kSettingsKeyNewWindowPolicy,
 		(uint32)OpenStartPage);
@@ -763,8 +788,8 @@ SettingsWindow::_RevertSettings()
 	int32 defaultFixedFontSize = fSettings->GetValue("fixed font size",
 		kDefaultFontSize);
 
-	_SetSizesMenuValue(fStandardSizesMenu->Menu(), defaultFontSize);
-	_SetSizesMenuValue(fFixedSizesMenu->Menu(), defaultFixedFontSize);
+	fStandardSizesSpinner->SetValue(defaultFontSize);
+	fFixedSizesSpinner->SetValue(defaultFixedFontSize);
 
 	fStandardFontView->SetFont(fSettings->GetValue("standard font",
 		*be_plain_font), defaultFontSize);
@@ -795,6 +820,33 @@ SettingsWindow::_RevertSettings()
 
 
 void
+SettingsWindow::_ChooseDownloadFolder(const BMessage* message)
+{
+	if (fOpenFilePanel == NULL) {
+		BMessenger target(this);
+		fOpenFilePanel = new (std::nothrow) BFilePanel(B_OPEN_PANEL,
+			&target, NULL, B_DIRECTORY_NODE);
+	}
+	BMessage panelMessage(MSG_HANDLE_DOWNLOAD_FOLDER);
+	fOpenFilePanel->SetMessage(&panelMessage);
+	fOpenFilePanel->Show();
+}
+
+
+void
+SettingsWindow:: _HandleDownloadPanelResult(BFilePanel* panel,
+	const BMessage* message)
+{
+	entry_ref ref;
+	if (message->FindRef("refs", 0, &ref) == B_OK)
+	{
+		BPath path(&ref);
+		fDownloadFolderControl->SetText(path.Path());
+	}
+}
+
+
+void
 SettingsWindow::_ValidateControlsEnabledStatus()
 {
 	bool canApply = _CanApplySettings();
@@ -816,6 +868,16 @@ SettingsWindow::_ValidateControlsEnabledStatus()
 
 // #pragma mark -
 
+
+uint32
+SettingsWindow::_StartUpPolicy() const
+{
+	uint32 startUpPolicy = ResumePriorSession;
+	BMenuItem* markedItem = fStartUpBehaviorMenu->Menu()->FindMarked();
+	if (markedItem == fStartUpBehaviorStartNewSession)
+		startUpPolicy = StartNewSession;
+	return startUpPolicy;
+}
 
 uint32
 SettingsWindow::_NewWindowPolicy() const
@@ -842,35 +904,6 @@ SettingsWindow::_NewTabPolicy() const
 	else if (markedItem == fNewTabBehaviorOpenSearchItem)
 		newTabPolicy = OpenSearchPage;
 	return newTabPolicy;
-}
-
-
-void
-SettingsWindow::_SetSizesMenuValue(BMenu* menu, int32 value)
-{
-	for (int32 i = 0; BMenuItem* item = menu->ItemAt(i); i++) {
-		bool marked = false;
-		if (BMessage* message = item->Message()) {
-			int32 size;
-			if (message->FindInt32("size", &size) == B_OK && size == value)
-				marked = true;
-		}
-		item->SetMarked(marked);
-	}
-}
-
-
-int32
-SettingsWindow::_SizesMenuValue(BMenu* menu) const
-{
-	if (BMenuItem* item = menu->FindMarked()) {
-		if (BMessage* message = item->Message()) {
-			int32 size;
-			if (message->FindInt32("size", &size) == B_OK)
-				return size;
-		}
-	}
-	return kDefaultFontSize;
 }
 
 

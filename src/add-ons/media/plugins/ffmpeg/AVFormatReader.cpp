@@ -58,7 +58,7 @@ avformat_to_beos_byte_order(AVSampleFormat format)
 
 
 static void
-avdictionary_to_message(AVDictionary* dictionary, BMetaData* data)
+avdictionary_to_message(AVDictionary* dictionary, BMessage* message)
 {
 	if (dictionary == NULL)
 		return;
@@ -69,45 +69,45 @@ avdictionary_to_message(AVDictionary* dictionary, BMetaData* data)
 		// convert entry keys into something more meaningful using the names from
 		// id3v2.c
 		if (strcmp(entry->key, "TALB") == 0 || strcmp(entry->key, "TAL") == 0)
-			data->SetString(kAlbum, entry->value);
+			message->AddString("album", entry->value);
 		else if (strcmp(entry->key, "TCOM") == 0)
-			data->SetString(kComposer, entry->value);
+			message->AddString("composer", entry->value);
 		else if (strcmp(entry->key, "TCON") == 0 || strcmp(entry->key, "TCO") == 0)
-			data->SetString(kGenre, entry->value);
+			message->AddString("genre", entry->value);
 		else if (strcmp(entry->key, "TCOP") == 0)
-			data->SetString(kCopyright, entry->value);
+			message->AddString("copyright", entry->value);
 		else if (strcmp(entry->key, "TDRL") == 0 || strcmp(entry->key, "TDRC") == 0)
-			data->SetString(kDate, entry->value);
+			message->AddString("date", entry->value);
 		else if (strcmp(entry->key, "TENC") == 0 || strcmp(entry->key, "TEN") == 0)
-			data->SetString(kEncodedBy, entry->value);
+			message->AddString("encoded_by", entry->value);
 		else if (strcmp(entry->key, "TIT2") == 0 || strcmp(entry->key, "TT2") == 0)
-			data->SetString(kTitle, entry->value);
+			message->AddString("title", entry->value);
 		else if (strcmp(entry->key, "TLAN") == 0)
-			data->SetString(kLanguage, entry->value);
+			message->AddString("language", entry->value);
 		else if (strcmp(entry->key, "TPE1") == 0 || strcmp(entry->key, "TP1") == 0)
-			data->SetString(kArtist, entry->value);
+			message->AddString("artist", entry->value);
 		else if (strcmp(entry->key, "TPE2") == 0 || strcmp(entry->key, "TP2") == 0)
-			data->SetString(kAlbumArtist, entry->value);
+			message->AddString("album_artist", entry->value);
 		else if (strcmp(entry->key, "TPE3") == 0 || strcmp(entry->key, "TP3") == 0)
-			data->SetString(kPerformer, entry->value);
+			message->AddString("performer", entry->value);
 		else if (strcmp(entry->key, "TPOS") == 0)
-			data->SetString(kDisc, entry->value);
+			message->AddString("disc", entry->value);
 		else if (strcmp(entry->key, "TPUB") == 0)
-			data->SetString(kPublisher, entry->value);
+			message->AddString("publisher", entry->value);
 		else if (strcmp(entry->key, "TRCK") == 0 || strcmp(entry->key, "TRK") == 0)
-			data->SetString(kTrack, entry->value);
+			message->AddString("track", entry->value);
 		else if (strcmp(entry->key, "TSOA") == 0)
-			data->SetString("album-sort", entry->value);
+			message->AddString("album-sort", entry->value);
 		else if (strcmp(entry->key, "TSOP") == 0)
-			data->SetString("artist-sort", entry->value);
+			message->AddString("artist-sort", entry->value);
 		else if (strcmp(entry->key, "TSOT") == 0)
-			data->SetString("title-sort", entry->value);
+			message->AddString("title-sort", entry->value);
 		else if (strcmp(entry->key, "TSSE") == 0)
-			data->SetString(kEncoder, entry->value);
+			message->AddString("encoder", entry->value);
 		else if (strcmp(entry->key, "TYER") == 0)
-			data->SetString(kYear, entry->value);
+			message->AddString("year", entry->value);
 		else
-			data->SetString(entry->key, entry->value);
+			message->AddString(entry->key, entry->value);
 	}
 }
 
@@ -206,14 +206,14 @@ StreamBase::StreamBase(BMediaIO* source, BLocker* sourceLock,
 	// NOTE: Don't use streamLock here, it may not yet be initialized!
 
 	av_new_packet(&fPacket, 0);
-	memset(&fFormat, 0, sizeof(media_format));
+	fFormat.Clear();
 }
 
 
 StreamBase::~StreamBase()
 {
 	avformat_close_input(&fContext);
-	av_free_packet(&fPacket);
+	av_packet_unref(&fPacket);
 	if (fIOContext != NULL)
 		av_free(fIOContext->buffer);
 	av_free(fIOContext);
@@ -232,8 +232,8 @@ StreamBase::Open()
 		return B_NO_MEMORY;
 
 	// First try to identify the file using the MIME database, as ffmpeg
-	// (especially old versions) is not very good at this and relies on us
-	// to give it the file extension as an hint.
+	// is not very good at this and relies on us to give it the file extension
+	// as an hint.
 	// For this we need some valid data in the buffer, the first 512 bytes
 	// should do because our MIME sniffing never uses more.
 	const char* extension = NULL;
@@ -246,11 +246,6 @@ StreamBase::Open()
 			}
 		}
 	}
-
-	// If the format is not identified, try Amiga MOD-files, because these do
-	// not currently have a sniffing rule.
-	if (extension == NULL)
-		extension = ".mod";
 
 	// Allocate I/O context with buffer and hook functions, pass ourself as
 	// cookie.
@@ -432,7 +427,7 @@ StreamBase::Duration() const
 	fSource->GetFlags(&flags);
 
 	// "Mutable Size" (ie http streams) means we can't realistically compute
-	// a duration. So don't let ffmpeg giva (wrong) estimate in this case.
+	// a duration. So don't let ffmpeg give a (wrong) estimate in this case.
 	if ((flags & B_MEDIA_MUTABLE_SIZE) != 0)
 		return 0;
 
@@ -841,7 +836,7 @@ StreamBase::_NextPacket(bool reuse)
 		return B_OK;
 	}
 
-	av_free_packet(&fPacket);
+	av_packet_unref(&fPacket);
 
 	while (true) {
 		if (av_read_frame(fContext, &fPacket) < 0) {
@@ -856,7 +851,7 @@ StreamBase::_NextPacket(bool reuse)
 			break;
 
 		// This is a packet from another stream, ignore it.
-		av_free_packet(&fPacket);
+		av_packet_unref(&fPacket);
 	}
 
 	// Mark this packet with the new reuse flag.
@@ -900,7 +895,7 @@ public:
 	// This will also initialize the media_format.
 	virtual	status_t			Init(int32 streamIndex);
 
-			status_t			GetMetaData(BMetaData* data);
+			status_t			GetMetaData(BMessage* data);
 
 	// Support for AVFormatReader
 			status_t			GetStreamInfo(int64* frameCount,
@@ -962,7 +957,7 @@ AVFormatReader::Stream::Init(int32 virtualIndex)
 
 	// initialize the media_format for this stream
 	media_format* format = &fFormat;
-	memset(format, 0, sizeof(media_format));
+	format->Clear();
 
 	media_format_description description;
 
@@ -1181,7 +1176,7 @@ AVFormatReader::Stream::Init(int32 virtualIndex)
 
 
 status_t
-AVFormatReader::Stream::GetMetaData(BMetaData* data)
+AVFormatReader::Stream::GetMetaData(BMessage* data)
 {
 	BAutolock _(&fLock);
 
@@ -1441,6 +1436,18 @@ AVFormatReader::~AVFormatReader()
 // #pragma mark -
 
 
+const char*
+AVFormatReader::Copyright()
+{
+	if (fCopyright.Length() <= 0) {
+		BMessage message;
+		if (GetMetaData(&message) == B_OK)
+			message.FindString("copyright", &fCopyright);
+	}
+	return fCopyright.String();
+}
+
+
 status_t
 AVFormatReader::Sniff(int32* _streamCount)
 {
@@ -1563,7 +1570,7 @@ AVFormatReader::GetFileFormatInfo(media_file_format* mff)
 
 
 status_t
-AVFormatReader::GetMetaData(BMetaData* data)
+AVFormatReader::GetMetaData(BMessage* _data)
 {
 	// The first cookie is always there!
 	const AVFormatContext* context = fStreams[0]->Context();
@@ -1571,28 +1578,28 @@ AVFormatReader::GetMetaData(BMetaData* data)
 	if (context == NULL)
 		return B_NO_INIT;
 
-	avdictionary_to_message(context->metadata, data);
+	avdictionary_to_message(context->metadata, _data);
 
 	// Add chapter info
 	for (unsigned i = 0; i < context->nb_chapters; i++) {
 		AVChapter* chapter = context->chapters[i];
-		BMetaData chapterData;
-		chapterData.SetInt64(kChapterStart, bigtime_t(1000000.0
+		BMessage chapterData;
+		chapterData.AddInt64("start", bigtime_t(1000000.0
 			* chapter->start * chapter->time_base.num
 			/ chapter->time_base.den + 0.5));
-		chapterData.SetInt64(kChapterEnd, bigtime_t(1000000.0
+		chapterData.AddInt64("end", bigtime_t(1000000.0
 			* chapter->end * chapter->time_base.num
 			/ chapter->time_base.den + 0.5));
 
 		avdictionary_to_message(chapter->metadata, &chapterData);
-		data->AddMetaData(kChapter, &chapterData);
+		_data->AddMessage("be:chapter", &chapterData);
 	}
 
 	// Add program info
 	for (unsigned i = 0; i < context->nb_programs; i++) {
-		BMetaData programData;
+		BMessage programData;
 		avdictionary_to_message(context->programs[i]->metadata, &programData);
-		data->AddMetaData(kProgramData, &programData);
+		_data->AddMessage("be:program", &programData);
 	}
 
 	return B_OK;
@@ -1691,10 +1698,10 @@ AVFormatReader::GetStreamInfo(void* _cookie, int64* frameCount,
 
 
 status_t
-AVFormatReader::GetStreamMetaData(void* _cookie, BMetaData* data)
+AVFormatReader::GetStreamMetaData(void* _cookie, BMessage* _data)
 {
 	Stream* cookie = reinterpret_cast<Stream*>(_cookie);
-	return cookie->GetMetaData(data);
+	return cookie->GetMetaData(_data);
 }
 
 

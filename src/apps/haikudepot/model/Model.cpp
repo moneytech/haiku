@@ -1,7 +1,7 @@
 /*
  * Copyright 2013-2014, Stephan Aßmus <superstippi@gmx.de>.
  * Copyright 2014, Axel Dörfler <axeld@pinc-software.de>.
- * Copyright 2016-2018, Andrew Lindesay <apl@lindesay.co.nz>.
+ * Copyright 2016-2019, Andrew Lindesay <apl@lindesay.co.nz>.
  * All rights reserved. Distributed under the terms of the MIT License.
  */
 
@@ -14,15 +14,19 @@
 
 #include <Autolock.h>
 #include <Catalog.h>
+#include <Collator.h>
 #include <Directory.h>
 #include <Entry.h>
 #include <File.h>
 #include <KeyStore.h>
+#include <Locale.h>
 #include <LocaleRoster.h>
 #include <Message.h>
 #include <Path.h>
 
+#include "HaikuDepotConstants.h"
 #include "Logger.h"
+#include "LocaleUtils.h"
 #include "StorageUtils.h"
 #include "RepositoryUrlUtils.h"
 
@@ -103,7 +107,7 @@ public:
 			const CategoryRef& category = categories.ItemAtFast(i);
 			if (category.Get() == NULL)
 				continue;
-			if (category->Name() == fCategory)
+			if (category->Code() == fCategory)
 				return true;
 		}
 		return false;
@@ -311,49 +315,26 @@ is_develop_package(const PackageInfoRef& package)
 // #pragma mark - Model
 
 
+static int32
+PackageCategoryCompareFn(const CategoryRef& c1, const CategoryRef& c2)
+{
+	BCollator* collator = LocaleUtils::GetSharedCollator();
+	int32 result = collator->Compare(c1->Name().String(),
+		c2->Name().String());
+	if (result == 0)
+		result = c1->Code().Compare(c2->Code());
+	return result;
+}
+
+
 Model::Model()
 	:
 	fDepots(),
-
-	fCategoryAudio(new PackageCategory(
-		BitmapRef(),
-		B_TRANSLATE("Audio"), "audio"), true),
-	fCategoryBusiness(new PackageCategory(
-		BitmapRef(),
-		B_TRANSLATE("Business"), "business"), true),
-	fCategoryDevelopment(new PackageCategory(
-		BitmapRef(),
-		B_TRANSLATE("Development"), "development"), true),
-	fCategoryEducation(new PackageCategory(
-		BitmapRef(),
-		B_TRANSLATE("Education"), "education"), true),
-	fCategoryGames(new PackageCategory(
-		BitmapRef(),
-		B_TRANSLATE("Games"), "games"), true),
-	fCategoryGraphics(new PackageCategory(
-		BitmapRef(),
-		B_TRANSLATE("Graphics"), "graphics"), true),
-	fCategoryInternetAndNetwork(new PackageCategory(
-		BitmapRef(),
-		B_TRANSLATE("Internet & Network"), "internetandnetwork"), true),
-	fCategoryProductivity(new PackageCategory(
-		BitmapRef(),
-		B_TRANSLATE("Productivity"), "productivity"), true),
-	fCategoryScienceAndMathematics(new PackageCategory(
-		BitmapRef(),
-		B_TRANSLATE("Science & Mathematics"), "scienceandmathematics"), true),
-	fCategorySystemAndUtilities(new PackageCategory(
-		BitmapRef(),
-		B_TRANSLATE("System & Utilities"), "systemandutilities"), true),
-	fCategoryVideo(new PackageCategory(
-		BitmapRef(),
-		B_TRANSLATE("Video"), "video"), true),
-
+	fCategories(&PackageCategoryCompareFn, NULL),
 	fCategoryFilter(PackageFilterRef(new AnyFilter(), true)),
 	fDepotFilter(""),
 	fSearchTermsFilter(PackageFilterRef(new AnyFilter(), true)),
 	fIsFeaturedFilter(),
-
 	fShowFeaturedPackages(true),
 	fShowAvailablePackages(true),
 	fShowInstalledPackages(true),
@@ -361,60 +342,18 @@ Model::Model()
 	fShowDevelopPackages(false)
 {
 	_UpdateIsFeaturedFilter();
-
-	// Don't forget to add new categories to this list:
-	fCategories.Add(fCategoryGames);
-	fCategories.Add(fCategoryBusiness);
-	fCategories.Add(fCategoryAudio);
-	fCategories.Add(fCategoryVideo);
-	fCategories.Add(fCategoryGraphics);
-	fCategories.Add(fCategoryEducation);
-	fCategories.Add(fCategoryProductivity);
-	fCategories.Add(fCategorySystemAndUtilities);
-	fCategories.Add(fCategoryInternetAndNetwork);
-	fCategories.Add(fCategoryDevelopment);
-	fCategories.Add(fCategoryScienceAndMathematics);
-	// TODO: The server will eventually support an API to
-	// get the defined categories and their translated names.
-	// This should then be used instead of hard-coded
-	// categories and translations in the app.
-
-	fPreferredLanguage = "en";
-	BLocaleRoster* localeRoster = BLocaleRoster::Default();
-	if (localeRoster != NULL) {
-		BMessage preferredLanguages;
-		if (localeRoster->GetPreferredLanguages(&preferredLanguages) == B_OK) {
-			BString language;
-			if (preferredLanguages.FindString("language", 0, &language) == B_OK)
-				language.CopyInto(fPreferredLanguage, 0, 2);
-		}
-	}
-
-	// TODO: Fetch this from the web-app.
-	fSupportedLanguages.Add("en");
-	fSupportedLanguages.Add("es");
-	fSupportedLanguages.Add("de");
-	fSupportedLanguages.Add("fr");
-	fSupportedLanguages.Add("it");
-	fSupportedLanguages.Add("ja");
-	fSupportedLanguages.Add("pt");
-	fSupportedLanguages.Add("ru");
-	fSupportedLanguages.Add("sk");
-	fSupportedLanguages.Add("zh");
-
-	if (!fSupportedLanguages.Contains(fPreferredLanguage)) {
-		// Force the preferred language to one of the currently supported
-		// ones, until the web application supports all ISO language codes.
-		printf("User preferred language '%s' not currently supported, "
-			"defaulting to 'en'.", fPreferredLanguage.String());
-		fPreferredLanguage = "en";
-	}
-	fWebAppInterface.SetPreferredLanguage(fPreferredLanguage);
 }
 
 
 Model::~Model()
 {
+}
+
+
+LanguageModel&
+Model::Language()
+{
+	return fLanguageModel;
 }
 
 
@@ -686,15 +625,20 @@ Model::PopulatePackage(const PackageInfoRef& package, uint32 flags)
 		BMessage info;
 
 		BString packageName;
-		BString architecture;
+		BString webAppRepositoryCode;
 		{
 			BAutolock locker(&fLock);
 			packageName = package->Name();
-			architecture = package->Architecture();
+			const DepotInfo* depot = DepotForName(package->DepotName());
+
+			if (depot != NULL)
+				webAppRepositoryCode = depot->WebAppRepositoryCode();
 		}
 
-		status_t status = fWebAppInterface.RetrieveUserRatings(packageName,
-			architecture, 0, 50, info);
+		status_t status = fWebAppInterface
+			.RetreiveUserRatingsForPackageForDisplay(packageName,
+				webAppRepositoryCode, 0, PACKAGE_INFO_MAX_USER_RATINGS,
+				info);
 		if (status == B_OK) {
 			// Parse message
 			BMessage result;
@@ -749,17 +693,20 @@ Model::PopulatePackage(const PackageInfoRef& package, uint32 flags)
 					BString minor = "?";
 					BString micro = "";
 					double revision = -1;
+					BString architectureCode = "";
 					BMessage version;
 					if (item.FindMessage("pkgVersion", &version) == B_OK) {
 						version.FindString("major", &major);
 						version.FindString("minor", &minor);
 						version.FindString("micro", &micro);
 						version.FindDouble("revision", &revision);
+						version.FindString("architectureCode",
+							&architectureCode);
 					}
 					BString versionString = major;
 					versionString << ".";
 					versionString << minor;
-					if (micro.Length() > 0) {
+					if (!micro.IsEmpty()) {
 						versionString << ".";
 						versionString << micro;
 					}
@@ -768,21 +715,18 @@ Model::PopulatePackage(const PackageInfoRef& package, uint32 flags)
 						versionString << (int) revision;
 					}
 
-					BDateTime createTimestamp;
-					double createTimestampMillisF;
-					if (item.FindDouble("createTimestamp",
-						&createTimestampMillisF) == B_OK) {
-						double createTimestampSecsF =
-							createTimestampMillisF / 1000.0;
-						time_t createTimestampSecs =
-							(time_t) createTimestampSecsF;
-						createTimestamp.SetTime_t(createTimestampSecs);
+					if (!architectureCode.IsEmpty()) {
+						versionString << " " << STR_MDASH << " ";
+						versionString << architectureCode;
 					}
+
+					double createTimestamp;
+					item.FindDouble("createTimestamp", &createTimestamp);
 
 					// Add the rating to the PackageInfo
 					UserRating userRating = UserRating(UserInfo(user), rating,
-						comment, languageCode, versionString, 0, 0,
-						createTimestamp);
+						comment, languageCode, versionString,
+						(uint64) createTimestamp);
 					package->AddUserRating(userRating);
 
 					if (Logger::IsDebugEnabled()) {
@@ -861,45 +805,75 @@ Model::_PopulatePackageChangelog(const PackageInfoRef& package)
 
 
 void
-Model::SetUsername(BString username)
+Model::SetNickname(BString nickname)
 {
 	BString password;
-	if (username.Length() > 0) {
+	if (nickname.Length() > 0) {
 		BPasswordKey key;
 		BKeyStore keyStore;
-		if (keyStore.GetKey(kHaikuDepotKeyring, B_KEY_TYPE_PASSWORD, username,
+		if (keyStore.GetKey(kHaikuDepotKeyring, B_KEY_TYPE_PASSWORD, nickname,
 				key) == B_OK) {
 			password = key.Password();
 		} else {
-			username = "";
+			nickname = "";
 		}
 	}
-	SetAuthorization(username, password, false);
+	SetAuthorization(nickname, password, false);
 }
 
 
 const BString&
-Model::Username() const
+Model::Nickname() const
 {
-	return fWebAppInterface.Username();
+	return fWebAppInterface.Nickname();
 }
 
 
 void
-Model::SetAuthorization(const BString& username, const BString& password,
+Model::SetAuthorization(const BString& nickname, const BString& passwordClear,
 	bool storePassword)
 {
-	if (storePassword && username.Length() > 0 && password.Length() > 0) {
-		BPasswordKey key(password, B_KEY_PURPOSE_WEB, username);
+	if (storePassword && nickname.Length() > 0 && passwordClear.Length() > 0) {
+		BPasswordKey key(passwordClear, B_KEY_PURPOSE_WEB, nickname);
 		BKeyStore keyStore;
 		keyStore.AddKeyring(kHaikuDepotKeyring);
 		keyStore.AddKey(kHaikuDepotKeyring, key);
 	}
 
 	BAutolock locker(&fLock);
-	fWebAppInterface.SetAuthorization(username, password);
+	fWebAppInterface.SetAuthorization(UserCredentials(nickname, passwordClear));
 
 	_NotifyAuthorizationChanged();
+}
+
+
+status_t
+Model::_LocalDataPath(const BString leaf, BPath& path) const
+{
+	BPath resultPath;
+	status_t result = B_OK;
+
+	if (result == B_OK)
+		result = find_directory(B_USER_CACHE_DIRECTORY, &resultPath);
+
+	if (result == B_OK)
+		result = resultPath.Append("HaikuDepot");
+
+	if (result == B_OK)
+		result = create_directory(resultPath.Path(), 0777);
+
+	if (result == B_OK)
+		result = resultPath.Append(leaf);
+
+	if (result == B_OK)
+		path.SetTo(resultPath.Path());
+	else {
+		path.Unset();
+		fprintf(stdout, "unable to find the user cache file for "
+			"[%s] data; %s\n", leaf.String(), strerror(result));
+	}
+
+	return result;
 }
 
 
@@ -912,20 +886,25 @@ Model::SetAuthorization(const BString& username, const BString& password,
 status_t
 Model::DumpExportRepositoryDataPath(BPath& path) const
 {
-	BPath repoDataPath;
+	BString leaf;
+	leaf.SetToFormat("repository-all_%s.json.gz",
+		LanguageModel().PreferredLanguage().Code());
+	return _LocalDataPath(leaf, path);
+}
 
-	if (find_directory(B_USER_CACHE_DIRECTORY, &repoDataPath) == B_OK
-		&& repoDataPath.Append("HaikuDepot") == B_OK
-		&& create_directory(repoDataPath.Path(), 0777) == B_OK
-		&& repoDataPath.Append("repository-all_en.json.gz") == B_OK) {
-		path.SetTo(repoDataPath.Path());
-		return B_OK;
-	}
 
-	path.Unset();
-	fprintf(stdout, "unable to find the user cache file for repositories'"
-		" data");
-	return B_ERROR;
+/*! When the system downloads reference data (eg; categories) from the server
+    then the downloaded data is stored and cached at the path defined by this
+    method.
+*/
+
+status_t
+Model::DumpExportReferenceDataPath(BPath& path) const
+{
+	BString leaf;
+	leaf.SetToFormat("reference-all_%s.json.gz",
+		LanguageModel().PreferredLanguage().Code());
+	return _LocalDataPath(leaf, path);
 }
 
 
@@ -933,18 +912,29 @@ status_t
 Model::IconStoragePath(BPath& path) const
 {
 	BPath iconStoragePath;
+	status_t result = B_OK;
 
-	if (find_directory(B_USER_CACHE_DIRECTORY, &iconStoragePath) == B_OK
-		&& iconStoragePath.Append("HaikuDepot") == B_OK
-		&& iconStoragePath.Append("__allicons") == B_OK
-		&& create_directory(iconStoragePath.Path(), 0777) == B_OK) {
+	if (result == B_OK)
+		result = find_directory(B_USER_CACHE_DIRECTORY, &iconStoragePath);
+
+	if (result == B_OK)
+		result = iconStoragePath.Append("HaikuDepot");
+
+	if (result == B_OK)
+		result = iconStoragePath.Append("__allicons");
+
+	if (result == B_OK)
+		result = create_directory(iconStoragePath.Path(), 0777);
+
+	if (result == B_OK)
 		path.SetTo(iconStoragePath.Path());
-		return B_OK;
+	else {
+		path.Unset();
+		fprintf(stdout, "unable to find the user cache directory for "
+			"icons; %s\n", strerror(result));
 	}
 
-	path.Unset();
-	fprintf(stdout, "unable to find the user cache directory for icons");
-	return B_ERROR;
+	return result;
 }
 
 
@@ -952,23 +942,10 @@ status_t
 Model::DumpExportPkgDataPath(BPath& path,
 	const BString& repositorySourceCode) const
 {
-	BPath repoDataPath;
-	BString leafName;
-
-	leafName.SetToFormat("pkg-all-%s-%s.json.gz", repositorySourceCode.String(),
-		fPreferredLanguage.String());
-
-	if (find_directory(B_USER_CACHE_DIRECTORY, &repoDataPath) == B_OK
-		&& repoDataPath.Append("HaikuDepot") == B_OK
-		&& create_directory(repoDataPath.Path(), 0777) == B_OK
-		&& repoDataPath.Append(leafName.String()) == B_OK) {
-		path.SetTo(repoDataPath.Path());
-		return B_OK;
-	}
-
-	path.Unset();
-	fprintf(stdout, "unable to find the user cache file for pkgs' data");
-	return B_ERROR;
+	BString leaf;
+	leaf.SetToFormat("pkg-all-%s-%s.json.gz", repositorySourceCode.String(),
+		LanguageModel().PreferredLanguage().Code());
+	return _LocalDataPath(leaf, path);
 }
 
 
@@ -1061,87 +1038,33 @@ Model::_NotifyAuthorizationChanged()
 
 
 void
-Model::ForAllDepots(void (*func)(const DepotInfo& depot, void* context),
+Model::_NotifyCategoryListChanged()
+{
+	for (int32 i = fListeners.CountItems() - 1; i >= 0; i--) {
+		const ModelListenerRef& listener = fListeners.ItemAtFast(i);
+		if (listener.Get() != NULL)
+			listener->CategoryListChanged();
+	}
+}
+
+
+
+/*! This method will find the stored 'DepotInfo' that correlates to the
+    supplied 'url' and will invoke the mapper function in order to get a
+    replacement for the 'DepotInfo'.  The 'url' is a unique identifier
+    for the repository that holds across mirrors.
+*/
+
+void
+Model::ReplaceDepotByUrl(const BString& URL, DepotMapper* depotMapper,
 	void* context)
 {
 	for (int32 i = 0; i < fDepots.CountItems(); i++) {
 		DepotInfo depotInfo = fDepots.ItemAtFast(i);
-		func(depotInfo, context);
-	}
-}
 
-
-/*! This method will find the stored 'DepotInfo' that correlates to the
-    supplied 'url' or 'baseUrl' and will invoke the mapper function in
-    order to get a replacement for the 'DepotInfo'.  The two URLs are
-    different.  The 'url' is a unique identifier for the repository that
-    holds across mirrors.  The 'baseUrl' is the URL stem that was used
-    to access the repository data in the first place.  The 'baseUrl' is
-    a legacy construct that exists from a time where the identifying
-    'url' was not being relayed properly.
-*/
-
-void
-Model::ReplaceDepotByUrl(
-	const BString& URL,
-	const BString& baseURL,
-		// deprecated
-	DepotMapper* depotMapper, void* context)
-{
-	for (int32 i = 0; i < fDepots.CountItems(); i++) {
-		DepotInfo depotInfo = fDepots.ItemAtFast(i);
-
-		if (RepositoryUrlUtils::EqualsOnUrlOrBaseUrl(URL, depotInfo.URL(),
-			baseURL, depotInfo.BaseURL())) {
+		if (RepositoryUrlUtils::EqualsNormalized(URL, depotInfo.URL())) {
 			BAutolock locker(&fLock);
 			fDepots.Replace(i, depotMapper->MapDepot(depotInfo, context));
-		}
-	}
-}
-
-
-void
-Model::ForAllPackages(PackageConsumer* packageConsumer, void* context)
-{
-	for (int32 i = 0; i < fDepots.CountItems(); i++) {
-		DepotInfo depotInfo = fDepots.ItemAtFast(i);
-		PackageList packages = depotInfo.Packages();
-		for(int32 j = 0; j < packages.CountItems(); j++) {
-			const PackageInfoRef& packageInfoRef = packages.ItemAtFast(j);
-
-			if (packageInfoRef != NULL) {
-				BAutolock locker(&fLock);
-				if (!packageConsumer->ConsumePackage(packageInfoRef, context))
-					return;
-			}
-		}
-	}
-}
-
-
-void
-Model::ForPackageByNameInDepot(const BString& depotName,
-	const BString& packageName, PackageConsumer* packageConsumer, void* context)
-{
-	int32 depotCount = fDepots.CountItems();
-
-	for (int32 i = 0; i < depotCount; i++) {
-		DepotInfo depotInfo = fDepots.ItemAtFast(i);
-
-		if (depotInfo.Name() == depotName) {
-			int32 packageIndex = depotInfo.PackageIndexByName(packageName);
-
-			if (-1 != packageIndex) {
-				PackageList packages = depotInfo.Packages();
-				const PackageInfoRef& packageInfoRef =
-					packages.ItemAtFast(packageIndex);
-
-				BAutolock locker(&fLock);
-				packageConsumer->ConsumePackage(packageInfoRef,
-					context);
-			}
-
-			return;
 		}
 	}
 }
@@ -1158,8 +1081,8 @@ Model::LogDepotsWithNoWebAppRepositoryCode() const
 		if (depot.WebAppRepositoryCode().Length() == 0) {
 			printf("depot [%s]", depot.Name().String());
 
-			if (depot.BaseURL().Length() > 0)
-				printf(" (%s)", depot.BaseURL().String());
+			if (depot.URL().Length() > 0)
+				printf(" (%s)", depot.URL().String());
 
 			printf(" correlates with no repository in the haiku"
 				"depot server system\n");
@@ -1185,4 +1108,29 @@ Model::_MaybeLogJsonRpcError(const BMessage &responsePayload,
 	} else {
 		printf("[%s] --> an undefined error has occurred\n", sourceDescription);
 	}
+}
+
+
+void
+Model::AddCategories(const CategoryList& categories)
+{
+	int32 i;
+	for (i = 0; i < categories.CountItems(); i++)
+		_AddCategory(categories.ItemAt(i));
+	_NotifyCategoryListChanged();
+}
+
+
+void
+Model::_AddCategory(const CategoryRef& category)
+{
+	int32 i;
+	for (i = 0; i < fCategories.CountItems(); i++) {
+		if (fCategories.ItemAt(i)->Code() == category->Code()) {
+			fCategories.Replace(i, category);
+			return;
+		}
+	}
+
+	fCategories.Add(category);
 }

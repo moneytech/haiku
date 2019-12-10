@@ -48,8 +48,7 @@ struct disk_address_packet {
 	uint16		number_of_blocks;
 	uint32		buffer;
 	uint64		lba;
-	uint64		flat_buffer;
-};
+} _PACKED;
 
 static const uint16 kParametersSizeVersion1 = 0x1a;
 static const uint16 kParametersSizeVersion2 = 0x1e;
@@ -924,3 +923,8 @@ platform_register_boot_device(Node *device)
 	return B_OK;
 }
 
+
+void
+platform_cleanup_devices()
+{
+}

@@ -18,28 +18,24 @@ rule ArchitectureSetup architecture
 		ccBaseFlags = -pipe ;
 	}
 
-	# disable strict aliasing on anything newer than gcc 2 as it may lead to
-	# unexpected results.
-	# TODO: remove the -fno-strict-aliasing option when all code has been
-	#		analyzed/fixed with regard to aliasing.
 	if $(gccVersion[1]) >= 3 {
+		# disable strict aliasing on anything newer than gcc 2 as it may lead to
+		# unexpected results.
+		# TODO: remove the -fno-strict-aliasing option when all code has been
+		#		analyzed/fixed with regard to aliasing.
 		ccBaseFlags += -fno-strict-aliasing ;
-	}
 
-	# Without this flag, GCC deletes many null-pointer checks that are
-	# technically undefined behavior (e.g. passing NULL to strdup, among
-	# others), which breaks both the kernel and various applications. See:
-	#  - https://freelists.org/post/haiku-development/hrev45320-Yet-another-nonobvious-effect-of-ftreevrp-optimization
-	#  - https://dev.haiku-os.org/ticket/13285#comment:8 (& subsequent comments)
-	#  - https://dev.haiku-os.org/ticket/10803#comment:4 (& subsequent comments)
-	# Note that the Linux also does the same:
-	#  - https://github.com/torvalds/linux/commit/a3ca86aea507904
-	if $(gccVersion[1]) >= 3 {
+		# Without this flag, GCC deletes many null-pointer checks that are
+		# technically undefined behavior (e.g. passing NULL to strdup, among
+		# others), which breaks both the kernel and various applications. See:
+		#  - https://freelists.org/post/haiku-development/hrev45320-Yet-another-nonobvious-effect-of-ftreevrp-optimization
+		#  - https://dev.haiku-os.org/ticket/13285#comment:8 (& subsequent comments)
+		#  - https://dev.haiku-os.org/ticket/10803#comment:4 (& subsequent comments)
+		# Note that the Linux also does the same:
+		#  - https://github.com/torvalds/linux/commit/a3ca86aea507904
 		ccBaseFlags += -fno-delete-null-pointer-checks ;
-	}
 
-	# disable some builtins that are incompatible with our definitions
-	if $(gccVersion[1]) >= 3 {
+		# disable some builtins that are incompatible with our definitions
 		ccBaseFlags += -fno-builtin-fork -fno-builtin-vfork ;
 	}
 
@@ -58,13 +54,6 @@ rule ArchitectureSetup architecture
 	}
 	ccBaseFlags += $(archFlags) ;
 
-	if $(cpu) = arm {
-		if $(HAIKU_CC_IS_CLANG_$(architecture)) != 1 {
-			# For stackcrawls - not supported by Clang
-			ccBaseFlags += -mapcs-frame ;
-		}
-	}
-
 	# activating graphite optimizations
 	if $(HAIKU_USE_GCC_GRAPHITE_$(architecture)) = 1 {
 		ccBaseFlags += -floop-interchange -ftree-loop-distribution
@@ -73,7 +62,7 @@ rule ArchitectureSetup architecture
 
 	# initial state for flags etc.
 	HAIKU_C++_$(architecture) ?= $(HAIKU_CC_$(architecture)) ;
-	HAIKU_LINK_$(architecture) = $(HAIKU_CC_$(architecture)) ;
+	HAIKU_LINK_$(architecture) ?= $(HAIKU_CC_$(architecture)) ;
 
 	HAIKU_CCFLAGS_$(architecture) += $(ccBaseFlags) -nostdinc ;
 	HAIKU_C++FLAGS_$(architecture) += $(ccBaseFlags) -nostdinc ;
@@ -112,34 +101,36 @@ rule ArchitectureSetup architecture
 	# set variables for gcc header options
 	SetIncludePropertiesVariables HAIKU : _$(architecture) ;
 
-	# C/C++ flags
-	if $(gccVersion[1]) >= 4 {
-		HAIKU_C++FLAGS_$(architecture) += -Wno-deprecated ;
-	}
-
 	# warning flags
 	HAIKU_WARNING_CCFLAGS_$(architecture) = -Wall
-		-Wno-trigraphs -Wno-multichar
-		-Wpointer-arith -Wcast-align -Wsign-compare
+		-Wno-multichar
+		-Wpointer-arith -Wsign-compare
 		-Wmissing-prototypes ;
 	HAIKU_WARNING_C++FLAGS_$(architecture) = -Wall
-		-Wno-trigraphs -Wno-multichar
-		-Wpointer-arith -Wcast-align -Wsign-compare
+		-Wno-multichar
+		-Wpointer-arith -Wsign-compare
 		-Wno-ctor-dtor-privacy -Woverloaded-virtual ;
 
 	# disable some Clang warnings that are not very useful
 	if $(HAIKU_CC_IS_CLANG_$(architecture)) = 1 {
 		HAIKU_WARNING_CCFLAGS_$(architecture) += -Wno-address-of-packed-member
-			-Wno-unused-private-field -Wno-cast-align -Wno-gnu-designator ;
+			-Wno-unused-private-field -Wno-cast-align -Wno-gnu-designator
+			-Wno-builtin-requires-header ;
 		HAIKU_WARNING_C++FLAGS_$(architecture) += -Wno-address-of-packed-member
-			-Wno-unused-private-field -Wno-cast-align -Wno-gnu-designator ;
+			-Wno-unused-private-field -Wno-cast-align -Wno-gnu-designator
+			-Wno-builtin-requires-header ;
 	}
 
 	HAIKU_WERROR_FLAGS_$(architecture) = ;
 
 	if $(gccVersion[1]) >= 4 {
-		# TODO: remove the -Wno-unused-but-set-variable option
-		HAIKU_WERROR_FLAGS_$(architecture) += -Wno-error=unused-but-set-variable ;
+		# TODO: Remove all these.
+		HAIKU_WERROR_FLAGS_$(architecture) += -Wno-error=unused-but-set-variable
+			-Wno-error=deprecated -Wno-error=deprecated-declarations
+			-Wno-error=cpp -Wno-error=trigraphs ;
+		# But these can stay.
+		HAIKU_WERROR_FLAGS_$(architecture) += -Wno-error=cast-align
+			-Wno-error=format-truncation ;
 	}
 
 	# debug flags
@@ -200,8 +191,8 @@ rule ArchitectureSetup architecture
 		libraryGrist = $(architecture) ;
 	}
 	local i ;
-	for i in be bnetapi codec debug device game locale mail media midi
-			midi2 network package root screensaver textencoding tracker
+	for i in be bnetapi debug device game locale mail media midi midi2
+			network package root screensaver textencoding tracker
 			translation z {
 		local library = lib$(i).so ;
 		HAIKU_LIBRARY_NAME_MAP_$(architecture)_$(i)
@@ -244,11 +235,19 @@ rule KernelArchitectureSetup architecture
 			# offset in floppy image (>= sizeof(haiku_loader))
 			HAIKU_BOOT_ARCHIVE_IMAGE_OFFSET = 384 ; # in kB
 
+		case sparc :
+			HAIKU_KERNEL_PLATFORM ?= openfirmware ;
+			HAIKU_BOOT_TARGETS += openfirmware ;
+
+			HAIKU_BOOT_FLOPPY_IMAGE_SIZE = 1440 ; # in kB
+			# offset in floppy image (>= sizeof(haiku_loader))
+			HAIKU_BOOT_ARCHIVE_IMAGE_OFFSET = 384 ; # in kB
+
 		case arm :
 			HAIKU_KERNEL_PLATFORM ?= u-boot ;
 			HAIKU_BOOT_TARGETS += u-boot ;
 
-			HAIKU_BOOT_SDIMAGE_SIZE ?= 128 ;
+			HAIKU_BOOT_SDIMAGE_SIZE ?= 32 ;
 			# SOC's like allwinner need an offset to skip the hardcoded initial loader
 			HAIKU_BOOT_SDIMAGE_BEGIN = 40950 ; # 512-byte sectors (divisible by 63)
 
@@ -258,19 +257,18 @@ rule KernelArchitectureSetup architecture
 			HAIKU_BOOT_LOADER_BASE ?= 0x1000000 ;
 
 			# Modern u-boot fill in sane addresses for us.
-			# We only need to fill in the FDT dtb
+			# Leverage the built-in fdt dtb for this board, unless a custom dtb is specified in uEnv.txt
 			HAIKU_MMC_UBOOT_SCRIPT = "\
 			    test -e mmc 0 uEnv.txt && fatload mmc 0 ${scriptaddr} uEnv.txt && env import -t ${scriptaddr} ${filesize} \
-			    fatload mmc 0 ${kernel_addr_r} haiku_loader.u-boot \
-			    fatload mmc 0 ${ramdisk_addr_r} haiku-floppyboot.tgz.u-boot \
-			    fatload mmc 0 ${fdt_addr_r} ${dtb} \
-			    fdt addr ${fdt_addr_r} \
-			    bootm ${kernel_addr_r} ${ramdisk_addr_r} ${fdt_addr_r}" ;
+			    fatload mmc 0 ${kernel_addr_r} haiku_loader.ub \
+			    fatload mmc 0 ${ramdisk_addr_r} haiku_floppyboot.ub \
+			    env exists dtb && fatload mmc 0 ${fdt_addr_r} ${dtb} && fdt addr ${fdt_addr_r} && bootm ${kernel_addr_r} ${ramdisk_addr_r} ${fdt_addr_r} \
+			    fdt addr ${fdtcontroladdr} && bootm ${kernel_addr_r} ${ramdisk_addr_r} ${fdtcontroladdr}" ;
 
 		case arm64 :
-			HAIKU_BOOT_PLATFORM ?= efi ;
+			HAIKU_KERNEL_PLATFORM ?= efi ;
 
-			HAIKU_BOOT_SDIMAGE_SIZE ?= 128 ;
+			HAIKU_BOOT_SDIMAGE_SIZE ?= 32 ;
 			# SOC's like allwinner need an offset to skip the hardcoded initial loader
 			HAIKU_BOOT_SDIMAGE_BEGIN = 40950 ; # 512-byte sectors (divisible by 63)
 
@@ -293,21 +291,8 @@ rule KernelArchitectureSetup architecture
 				Exit "HAIKU_NASM not set. Please re-run configure." ;
 			}
 
-		case riscv32 :
-			HAIKU_BOOT_PLATFORM ?= u-boot ;
-			HAIKU_BOOT_TARGETS += u-boot ;
-
-			HAIKU_BOOT_SDIMAGE_SIZE ?= 128 ;
-			# SOC's like allwinner need an offset to skip the hardcoded initial loader
-			HAIKU_BOOT_SDIMAGE_BEGIN = 40950 ; # 512-byte sectors (divisible by 63)
-
-			HAIKU_BOOT_FLOPPY_IMAGE_SIZE = 1440 ;
-			# offset in floppy image (>= sizeof(haiku_loader))
-			HAIKU_BOOT_ARCHIVE_IMAGE_OFFSET = 192 ; # in kB - unused yet
-			HAIKU_BOOT_LOADER_BASE ?= 0x1000000 ;
-
 		case riscv64 :
-			HAIKU_BOOT_PLATFORM ?= u-boot ;
+			HAIKU_KERNEL_PLATFORM ?= u-boot ;
 			HAIKU_BOOT_TARGETS += u-boot ;
 
 			HAIKU_BOOT_SDIMAGE_SIZE ?= 128 ;
@@ -338,7 +323,7 @@ rule KernelArchitectureSetup architecture
 
 		case m68k :
 			HAIKU_KERNEL_PLATFORM ?= atari_m68k ;
-			HAIKU_BOOT_TARGETS += atari_m68k ;
+			HAIKU_BOOT_TARGETS += amiga_m68k atari_m68k ;
 			switch $(HAIKU_KERNEL_PLATFORM) {
 				case atari_m68k :
 				{
@@ -440,6 +425,12 @@ rule KernelArchitectureSetup architecture
 			HAIKU_KERNEL_CCFLAGS += -mtune=68020-60 ;
 			HAIKU_KERNEL_C++FLAGS += -mtune=68020-60 ;
 
+		case riscv64 :
+			# Kernel lives within any single 2 GiB address space.
+			# Default is medlow (-2GiB / +2GiB)
+			HAIKU_KERNEL_CCFLAGS += -mcmodel=medany ;
+			HAIKU_KERNEL_C++FLAGS += -mcmodel=medany ;
+
 		case x86 :
 			HAIKU_KERNEL_CCFLAGS += -march=pentium ;
 			HAIKU_KERNEL_C++FLAGS += -march=pentium ;
@@ -471,14 +462,22 @@ rule KernelArchitectureSetup architecture
 			case efi :
 				# efi bootloader is PIC
 				HAIKU_BOOT_$(bootTarget:U)_CCFLAGS += -fpic -fno-stack-protector
-					-fPIC -fshort-wchar -Wno-error=unused-variable -Wno-error=main
-					-mno-red-zone ;
+					-fPIC -fshort-wchar -Wno-error=unused-variable -Wno-error=main ;
 				HAIKU_BOOT_$(bootTarget:U)_C++FLAGS += -fpic -fno-stack-protector
-					-fPIC -fshort-wchar -Wno-error=unused-variable -Wno-error=main
-					-mno-red-zone ;
-				if $(HAIKU_CC_IS_CLANG_$(architecture)) != 1 {
-					HAIKU_BOOT_$(bootTarget:U)_CCFLAGS += -maccumulate-outgoing-args ;
-					HAIKU_BOOT_$(bootTarget:U)_C++FLAGS += -maccumulate-outgoing-args ;
+					-fPIC -fshort-wchar -Wno-error=unused-variable -Wno-error=main ;
+				switch $(cpu) {
+					case x86 :
+						if $(HAIKU_CC_IS_CLANG_$(architecture)) != 1 {
+							HAIKU_BOOT_$(bootTarget:U)_CCFLAGS += -maccumulate-outgoing-args ;
+							HAIKU_BOOT_$(bootTarget:U)_C++FLAGS += -maccumulate-outgoing-args ;
+						}
+					case x86_64 :
+						HAIKU_BOOT_$(bootTarget:U)_CCFLAGS += -mno-red-zone ;
+						HAIKU_BOOT_$(bootTarget:U)_C++FLAGS += -mno-red-zone ;
+						if $(HAIKU_CC_IS_CLANG_$(architecture)) != 1 {
+							HAIKU_BOOT_$(bootTarget:U)_CCFLAGS += -maccumulate-outgoing-args ;
+							HAIKU_BOOT_$(bootTarget:U)_C++FLAGS += -maccumulate-outgoing-args ;
+						}
 				}
 				HAIKU_BOOT_$(bootTarget:U)_LDFLAGS = -Bstatic -Bsymbolic
 					-nostdlib -znocombreloc -no-undefined ;
@@ -647,7 +646,7 @@ rule ArchitectureSetupWarnings architecture
 #	EnableWerror src add-ons kernel file_systems googlefs ;
 	EnableWerror src add-ons kernel file_systems iso9660 ;
 	EnableWerror src add-ons kernel file_systems layers ;
-	EnableWerror src add-ons kernel file_systems netfs ;
+#	EnableWerror src add-ons kernel file_systems netfs ;
 #	EnableWerror src add-ons kernel file_systems nfs ;
 	EnableWerror src add-ons kernel file_systems nfs4 ;
 #	EnableWerror src add-ons kernel file_systems ntfs ;
@@ -686,24 +685,10 @@ rule ArchitectureSetupWarnings architecture
 #	EnableWerror src add-ons media media-add-ons video_producer_demo ;
 	EnableWerror src add-ons media media-add-ons videowindow ;
 	EnableWerror src add-ons media media-add-ons writer ;
-	EnableWerror src add-ons media plugins aiff_reader ;
 	EnableWerror src add-ons media plugins ape_reader ;
-#	EnableWerror src add-ons media plugins asf_reader ;
 	EnableWerror src add-ons media plugins au_reader ;
-#	EnableWerror src add-ons media plugins avi_reader ;
 #	EnableWerror src add-ons media plugins ffmpeg ;
-#	EnableWerror src add-ons media plugins matroska ;
-#	EnableWerror src add-ons media plugins mov_reader ;
-	EnableWerror src add-ons media plugins mp3_decoder ;
-#	EnableWerror src add-ons media plugins mp3_reader ;
-	EnableWerror src add-ons media plugins mp4_reader ;
-	EnableWerror src add-ons media plugins musepack ;
-#	EnableWerror src add-ons media plugins ogg ;
 #	EnableWerror src add-ons media plugins raw_decoder ;
-#	EnableWerror src add-ons media plugins speex ;
-	EnableWerror src add-ons media plugins theora ;
-	EnableWerror src add-ons media plugins vorbis ;
-#	EnableWerror src add-ons media plugins wav_reader ;
 	EnableWerror src add-ons print ;
 	EnableWerror src add-ons screen_savers ;
 	EnableWerror src add-ons tracker ;
@@ -737,7 +722,7 @@ rule ArchitectureSetupWarnings architecture
 	EnableWerror src preferences ;
 	EnableWerror src servers ;
 	EnableWerror src system boot ;
-#	EnableWerror src system kernel ;
+	EnableWerror src system kernel ;
 	EnableWerror src system libroot add-ons ;
 	EnableWerror src system libroot os ;
 	EnableWerror src system libroot posix locale ;

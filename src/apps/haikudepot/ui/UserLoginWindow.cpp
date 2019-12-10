@@ -1,18 +1,22 @@
 /*
  * Copyright 2014, Stephan Aßmus <superstippi@gmx.de>.
+ * Copyright 2019, Andrew Lindesay <apl@lindesay.co.nz>.
  * All rights reserved. Distributed under the terms of the MIT License.
  */
 
 #include "UserLoginWindow.h"
 
 #include <algorithm>
+#include <ctype.h>
 #include <stdio.h>
 
 #include <mail_encoding.h>
 
 #include <Alert.h>
 #include <Autolock.h>
+#include <AutoLocker.h>
 #include <Catalog.h>
+#include <CheckBox.h>
 #include <Button.h>
 #include <LayoutBuilder.h>
 #include <MenuField.h>
@@ -20,36 +24,54 @@
 #include <TextControl.h>
 #include <UnicodeChar.h>
 
+#include "AppUtils.h"
 #include "BitmapView.h"
+#include "HaikuDepotConstants.h"
+#include "LanguageMenuUtils.h"
+#include "LinkView.h"
 #include "Model.h"
 #include "TabView.h"
+#include "UserUsageConditions.h"
+#include "UserUsageConditionsWindow.h"
 #include "WebAppInterface.h"
 
 
 #undef B_TRANSLATION_CONTEXT
 #define B_TRANSLATION_CONTEXT "UserLoginWindow"
 
+#define PLACEHOLDER_TEXT B_UTF8_ELLIPSIS
+
+enum ActionTabs {
+	TAB_LOGIN					= 0,
+	TAB_CREATE_ACCOUNT			= 1
+};
 
 enum {
 	MSG_SEND					= 'send',
 	MSG_TAB_SELECTED			= 'tbsl',
 	MSG_CAPTCHA_OBTAINED		= 'cpob',
-	MSG_VALIDATE_FIELDS			= 'vldt',
-	MSG_LANGUAGE_SELECTED		= 'lngs',
+	MSG_VALIDATE_FIELDS			= 'vldt'
 };
 
+/*! The creation of an account requires that some prerequisite data is first
+    loaded in or may later need to be refreshed.  This enum controls what
+    elements of the setup should be performed.
+*/
 
-static void
-add_languages_to_menu(const StringList& languages, BMenu* menu)
-{
-	for (int i = 0; i < languages.CountItems(); i++) {
-		const BString& language = languages.ItemAtFast(i);
-		BMessage* message = new BMessage(MSG_LANGUAGE_SELECTED);
-		message->AddString("code", language);
-		BMenuItem* item = new BMenuItem(language, message);
-		menu->AddItem(item);
-	}
-}
+enum CreateAccountSetupMask {
+	CREATE_CAPTCHA					= 1 << 1,
+	FETCH_USER_USAGE_CONDITIONS		= 1 << 2
+};
+
+/*! A background thread runs to gather data to use in the interface for creating
+    a new user.  This structure is passed to the background thread.
+*/
+
+struct CreateAccountSetupThreadData {
+	UserLoginWindow*	window;
+	uint32				mask;
+		// defines what setup steps are required
+};
 
 
 UserLoginWindow::UserLoginWindow(BWindow* parent, BRect frame, Model& model)
@@ -58,9 +80,10 @@ UserLoginWindow::UserLoginWindow(BWindow* parent, BRect frame, Model& model)
 		B_FLOATING_WINDOW_LOOK, B_FLOATING_SUBSET_WINDOW_FEEL,
 		B_ASYNCHRONOUS_CONTROLS | B_AUTO_UPDATE_SIZE_LIMITS
 			| B_NOT_RESIZABLE | B_NOT_ZOOMABLE),
-	fPreferredLanguage(model.PreferredLanguage()),
+	fPreferredLanguageCode(LANGUAGE_DEFAULT_CODE),
 	fModel(model),
 	fMode(NONE),
+	fUserUsageConditions(NULL),
 	fWorkerThread(-1)
 {
 	AddToSubset(parent);
@@ -78,23 +101,41 @@ UserLoginWindow::UserLoginWindow(BWindow* parent, BRect frame, Model& model)
 		"", new BMessage(MSG_VALIDATE_FIELDS));
 	fRepeatPasswordField->TextView()->HideTyping(true);
 
-	// Construct languages popup
-	BPopUpMenu* languagesMenu = new BPopUpMenu(B_TRANSLATE("Language"));
-	fLanguageCodeField = new BMenuField("language",
-		B_TRANSLATE("Preferred language:"), languagesMenu);
+	{
+		AutoLocker<BLocker> locker(fModel.Lock());
+		fPreferredLanguageCode = fModel.Language().PreferredLanguage().Code();
+		// Construct languages popup
+		BPopUpMenu* languagesMenu = new BPopUpMenu(B_TRANSLATE("Language"));
+		fLanguageCodeField = new BMenuField("language",
+			B_TRANSLATE("Preferred language:"), languagesMenu);
 
-	add_languages_to_menu(fModel.SupportedLanguages(), languagesMenu);
-	languagesMenu->SetTargetForItems(this);
+		LanguageMenuUtils::AddLanguagesToMenu(
+			fModel.Language().SupportedLanguages(),
+			languagesMenu);
+		languagesMenu->SetTargetForItems(this);
 
-	BMenuItem* defaultItem = languagesMenu->ItemAt(
-		fModel.SupportedLanguages().IndexOf(fPreferredLanguage));
-	if (defaultItem != NULL)
-		defaultItem->SetMarked(true);
-
+		printf("using preferred language code [%s]\n",
+			fPreferredLanguageCode.String());
+		LanguageMenuUtils::MarkLanguageInMenu(fPreferredLanguageCode,
+			languagesMenu);
+	}
 
 	fEmailField = new BTextControl(B_TRANSLATE("Email address:"), "", NULL);
 	fCaptchaView = new BitmapView("captcha view");
 	fCaptchaResultField = new BTextControl("", "", NULL);
+	fConfirmMinimumAgeCheckBox = new BCheckBox("confirm minimum age",
+		PLACEHOLDER_TEXT,
+			// is filled in when the user usage conditions data is available
+		NULL);
+	fConfirmMinimumAgeCheckBox->SetEnabled(false);
+	fConfirmUserUsageConditionsCheckBox = new BCheckBox(
+		"confirm usage conditions",
+		B_TRANSLATE("I agree to the usage conditions"),
+		NULL);
+	fUserUsageConditionsLink = new LinkView("usage conditions view",
+		B_TRANSLATE("View the usage conditions"),
+		new BMessage(MSG_VIEW_LATEST_USER_USAGE_CONDITIONS));
+	fUserUsageConditionsLink->SetTarget(this);
 
 	// Setup modification messages on all text fields to trigger validation
 	// of input
@@ -108,7 +149,6 @@ UserLoginWindow::UserLoginWindow(BWindow* parent, BRect frame, Model& model)
 		new BMessage(MSG_VALIDATE_FIELDS));
 	fCaptchaResultField->SetModificationMessage(
 		new BMessage(MSG_VALIDATE_FIELDS));
-
 	fTabView = new TabView(BMessenger(this),
 		BMessage(MSG_TAB_SELECTED));
 
@@ -131,7 +171,9 @@ UserLoginWindow::UserLoginWindow(BWindow* parent, BRect frame, Model& model)
 		.AddMenuField(fLanguageCodeField, 0, 4)
 		.Add(fCaptchaView, 0, 5)
 		.Add(fCaptchaResultField, 1, 5)
-
+		.Add(fConfirmMinimumAgeCheckBox, 1, 6)
+		.Add(fConfirmUserUsageConditionsCheckBox, 1, 7)
+		.Add(fUserUsageConditionsLink, 1, 8)
 		.SetInsets(B_USE_DEFAULT_SPACING)
 	;
 	fTabView->AddTab(createAccountCard);
@@ -177,6 +219,10 @@ UserLoginWindow::MessageReceived(BMessage* message)
 			_ValidateCreateAccountFields();
 			break;
 
+		case MSG_VIEW_LATEST_USER_USAGE_CONDITIONS:
+			_ViewUserUsageConditions();
+			break;
+
 		case MSG_SEND:
 			switch (fMode) {
 				case LOGIN:
@@ -195,10 +241,10 @@ UserLoginWindow::MessageReceived(BMessage* message)
 			int32 tabIndex;
 			if (message->FindInt32("tab index", &tabIndex) == B_OK) {
 				switch (tabIndex) {
-					case 0:
+					case TAB_LOGIN:
 						_SetMode(LOGIN);
 						break;
-					case 1:
+					case TAB_CREATE_ACCOUNT:
 						_SetMode(CREATE_ACCOUNT);
 						break;
 					default:
@@ -217,8 +263,12 @@ UserLoginWindow::MessageReceived(BMessage* message)
 			fCaptchaResultField->SetText("");
 			break;
 
+		case MSG_USER_USAGE_CONDITIONS_DATA:
+			_SetUserUsageConditions(new UserUsageConditions(message));
+			break;
+
 		case MSG_LANGUAGE_SELECTED:
-			message->FindString("code", &fPreferredLanguage);
+			message->FindString("code", &fPreferredLanguageCode);
 			break;
 
 		default:
@@ -247,15 +297,14 @@ UserLoginWindow::_SetMode(Mode mode)
 
 	switch (fMode) {
 		case LOGIN:
-			fTabView->Select((int32)0);
+			fTabView->Select(TAB_LOGIN);
 			fSendButton->SetLabel(B_TRANSLATE("Log in"));
 			fUsernameField->MakeFocus();
 			break;
 		case CREATE_ACCOUNT:
-			fTabView->Select(1);
+			fTabView->Select(TAB_CREATE_ACCOUNT);
 			fSendButton->SetLabel(B_TRANSLATE("Create account"));
-			if (fCaptchaToken.IsEmpty())
-				_RequestCaptcha();
+			_CreateAccountSetupIfNecessary();
 			fNewUsernameField->MakeFocus();
 			_ValidateCreateAccountFields();
 			break;
@@ -293,6 +342,24 @@ count_upper_case_letters(const BString& string)
 }
 
 
+static bool
+contains_any_whitespace(const BString& string)
+{
+	const char* c = string.String();
+	for (int32 i = 0; i < string.CountChars(); i++) {
+		if (isspace(c[i]))
+			return true;
+	}
+
+	return false;
+}
+
+
+/*! This method will check that the inputs in the user interface are, as far as
+    the desktop application can be sure, correct.
+    \return true if the data in the form was valid.
+*/
+
 bool
 UserLoginWindow::_ValidateCreateAccountFields(bool alertProblems)
 {
@@ -301,8 +368,17 @@ UserLoginWindow::_ValidateCreateAccountFields(bool alertProblems)
 	BString password2(fRepeatPasswordField->Text());
 	BString email(fEmailField->Text());
 	BString captcha(fCaptchaResultField->Text());
+	bool minimumAgeConfirmed = fConfirmMinimumAgeCheckBox->Value()
+		== B_CONTROL_ON;
+	bool userUsageConditionsConfirmed =
+		fConfirmUserUsageConditionsCheckBox->Value() == B_CONTROL_ON;
 
 	// TODO: Use the same validation as the web-serivce
+
+	bool validEmail = email.IsEmpty() ||
+		(B_ERROR != email.FindFirst("@") && !contains_any_whitespace(email));
+	fEmailField->MarkAsInvalid(!validEmail);
+
 	bool validUserName = nickName.Length() >= 3;
 	fNewUsernameField->MarkAsInvalid(!validUserName);
 
@@ -316,23 +392,11 @@ UserLoginWindow::_ValidateCreateAccountFields(bool alertProblems)
 	fCaptchaResultField->MarkAsInvalid(!validCaptcha);
 
 	bool valid = validUserName && validPassword && password1 == password2
-		&& validCaptcha;
-	if (valid && email.Length() > 0)
-		return true;
+		&& validCaptcha && minimumAgeConfirmed && userUsageConditionsConfirmed
+		&& validEmail;
 
-	if (alertProblems) {
-		BString message;
-		alert_type alertType;
-		const char* okLabel = B_TRANSLATE("OK");
-		const char* cancelLabel = NULL;
-		if (!valid) {
-			message = B_TRANSLATE("There are problems in the form:\n\n");
-			alertType = B_WARNING_ALERT;
-		} else {
-			alertType = B_IDEA_ALERT;
-			okLabel = B_TRANSLATE("Ignore");
-			cancelLabel = B_TRANSLATE("Cancel");
-		}
+	if (!valid && alertProblems) {
+		BString message = B_TRANSLATE("There are problems in the form:\n\n");
 
 		if (!validUserName) {
 			message << B_TRANSLATE(
@@ -361,17 +425,24 @@ UserLoginWindow::_ValidateCreateAccountFields(bool alertProblems)
 				"The captcha puzzle needs to be solved.") << "\n\n";
 		}
 
+		if (!minimumAgeConfirmed) {
+			message << B_TRANSLATE(
+				"The minimum age requirements must be met.") << "\n\n";
+		}
+
+		if (!userUsageConditionsConfirmed) {
+			message << B_TRANSLATE(
+				"The usage conditions must be agreed to.") << "\n\n";
+		}
+
 		BAlert* alert = new(std::nothrow) BAlert(
 			B_TRANSLATE("Input validation"),
 			message,
-			okLabel, cancelLabel, NULL,
-			B_WIDTH_AS_USUAL, alertType);
+			B_TRANSLATE("OK"), NULL, NULL,
+			B_WIDTH_AS_USUAL, B_WARNING_ALERT);
 
-		if (alert != NULL) {
-			int32 choice = alert->Go();
-			if (choice == 1)
-				return false;
-		}
+		if (alert != NULL)
+			alert->Go();
 	}
 
 	return valid;
@@ -412,24 +483,57 @@ UserLoginWindow::_CreateAccount()
 
 
 void
-UserLoginWindow::_RequestCaptcha()
+UserLoginWindow::_CreateAccountSetupIfNecessary()
 {
-	if (Lock()) {
-		fCaptchaToken = "";
-		fCaptchaView->UnsetBitmap();
-		fCaptchaImage.Unset();
-		Unlock();
-	}
+	uint32 setupMask = 0;
+	if (fCaptchaToken.IsEmpty())
+		setupMask |= CREATE_CAPTCHA;
+	if (fUserUsageConditions == NULL)
+		setupMask |= FETCH_USER_USAGE_CONDITIONS;
+	_CreateAccountSetup(setupMask);
+}
+
+
+void
+UserLoginWindow::_CreateAccountSetup(uint32 mask)
+{
+	if (mask == 0)
+		return;
 
 	BAutolock locker(&fLock);
 
 	if (fWorkerThread >= 0)
 		return;
 
-	thread_id thread = spawn_thread(&_RequestCaptchaThreadEntry,
-		"Captcha requester", B_NORMAL_PRIORITY, this);
+	if (!Lock())
+		debugger("unable to lock the user login window");
+
+	if ((mask & CREATE_CAPTCHA) != 0) {
+		fCaptchaToken = "";
+		fCaptchaView->UnsetBitmap();
+		fCaptchaImage.Unset();
+	}
+
+	if ((mask & FETCH_USER_USAGE_CONDITIONS) != 0) {
+		fConfirmMinimumAgeCheckBox->SetLabel(PLACEHOLDER_TEXT);
+		fConfirmMinimumAgeCheckBox->SetValue(0);
+		fConfirmUserUsageConditionsCheckBox->SetValue(0);
+	}
+
+	Unlock();
+
+	CreateAccountSetupThreadData* threadData = new CreateAccountSetupThreadData;
+	threadData->window = this;
+	threadData->mask = mask;
+
+	thread_id thread = spawn_thread(&_CreateAccountSetupThreadEntry,
+		"Create account setup", B_NORMAL_PRIORITY, threadData);
 	if (thread >= 0)
 		_SetWorkerThread(thread);
+	else {
+		debugger("unable to start a thread to gather data for creating an "
+			"account");
+	}
 }
 
 
@@ -474,6 +578,9 @@ UserLoginWindow::_SetWorkerThread(thread_id thread)
 	fEmailField->SetEnabled(enabled);
 	fLanguageCodeField->SetEnabled(enabled);
 	fCaptchaResultField->SetEnabled(enabled);
+	fConfirmMinimumAgeCheckBox->SetEnabled(enabled);
+	fConfirmUserUsageConditionsCheckBox->SetEnabled(enabled);
+	fUserUsageConditionsLink->SetEnabled(enabled);
 	fSendButton->SetEnabled(enabled);
 
 	if (thread >= 0) {
@@ -484,6 +591,45 @@ UserLoginWindow::_SetWorkerThread(thread_id thread)
 	}
 
 	Unlock();
+}
+
+
+void
+UserLoginWindow::_CreateAccountUserUsageConditionsSetupThread()
+{
+	UserUsageConditions conditions;
+	WebAppInterface interface = fModel.GetWebAppInterface();
+
+	if (interface.RetrieveUserUsageConditions(NULL, conditions) == B_OK) {
+		BMessage dataMessage(MSG_USER_USAGE_CONDITIONS_DATA);
+		conditions.Archive(&dataMessage, true);
+		BMessenger(this).SendMessage(&dataMessage);
+	} else {
+		AppUtils::NotifySimpleError(
+			B_TRANSLATE("Usage conditions download problem"),
+			B_TRANSLATE("An error has arisen downloading the usage "
+				"conditions. Check the log for details and try again."));
+		BMessenger(this).SendMessage(B_QUIT_REQUESTED);
+	}
+}
+
+
+/*! This method is hit when the user usage conditions data arrives back from the
+    server.  At this point some of the UI elements may need to be updated.
+*/
+
+void
+UserLoginWindow::_SetUserUsageConditions(
+	UserUsageConditions* userUsageConditions)
+{
+	fUserUsageConditions = userUsageConditions;
+	BString minimumAgeString;
+	minimumAgeString.SetToFormat("%" B_PRId8,
+		fUserUsageConditions->MinimumAge());
+	BString label = B_TRANSLATE(
+		"I am %MinimumAgeYears% years of age or older");
+	label.ReplaceAll("%MinimumAgeYears%", minimumAgeString);
+	fConfirmMinimumAgeCheckBox->SetLabel(label);
 }
 
 
@@ -554,16 +700,22 @@ UserLoginWindow::_AuthenticateThread()
 
 
 int32
-UserLoginWindow::_RequestCaptchaThreadEntry(void* data)
+UserLoginWindow::_CreateAccountSetupThreadEntry(void* data)
 {
-	UserLoginWindow* window = reinterpret_cast<UserLoginWindow*>(data);
-	window->_RequestCaptchaThread();
+	CreateAccountSetupThreadData* threadData =
+		reinterpret_cast<CreateAccountSetupThreadData*>(data);
+	if ((threadData->mask & CREATE_CAPTCHA) != 0)
+		threadData->window->_CreateAccountCaptchaSetupThread();
+	if ((threadData->mask & FETCH_USER_USAGE_CONDITIONS) != 0)
+		threadData->window->_CreateAccountUserUsageConditionsSetupThread();
+	threadData->window->_SetWorkerThread(-1);
+	delete threadData;
 	return 0;
 }
 
 
 void
-UserLoginWindow::_RequestCaptchaThread()
+UserLoginWindow::_CreateAccountCaptchaSetupThread()
 {
 	WebAppInterface interface;
 	BMessage info;
@@ -598,8 +750,6 @@ UserLoginWindow::_RequestCaptchaThread()
 	} else {
 		fprintf(stderr, "Failed to obtain captcha: %s\n", strerror(status));
 	}
-
-	_SetWorkerThread(-1);
 }
 
 
@@ -618,12 +768,22 @@ UserLoginWindow::_CreateAccountThread()
 	if (!Lock())
 		return;
 
+	if (fUserUsageConditions == NULL)
+		debugger("missing usage conditions when creating an account");
+
+	if (fConfirmMinimumAgeCheckBox->Value() == 0
+		|| fConfirmUserUsageConditionsCheckBox->Value() == 0) {
+		debugger("expected that the minimum age and usage conditions are "
+			"agreed to at this point");
+	}
+
 	BString nickName(fNewUsernameField->Text());
 	BString passwordClear(fNewPasswordField->Text());
 	BString email(fEmailField->Text());
 	BString captchaToken(fCaptchaToken);
 	BString captchaResponse(fCaptchaResultField->Text());
-	BString languageCode(fPreferredLanguage);
+	BString languageCode(fPreferredLanguageCode);
+	BString userUsageConditionsCode(fUserUsageConditions->Code());
 
 	Unlock();
 
@@ -632,7 +792,7 @@ UserLoginWindow::_CreateAccountThread()
 
 	status_t status = interface.CreateUser(
 		nickName, passwordClear, email, captchaToken, captchaResponse,
-		languageCode, info);
+		languageCode, userUsageConditionsCode, info);
 
 	BAutolock locker(&fLock);
 
@@ -683,7 +843,7 @@ UserLoginWindow::_CreateAccountThread()
 
 		// We need a new captcha, it can be used only once
 		fCaptchaToken = "";
-		_RequestCaptcha();
+		_CreateAccountSetup(CREATE_CAPTCHA);
 	} else {
 		fModel.SetAuthorization(nickName, passwordClear, true);
 
@@ -743,4 +903,18 @@ UserLoginWindow::_CollectValidationFailures(const BMessage& result,
 	if (!found) {
 		error << B_TRANSLATE("But none could be listed here, sorry.");
 	}
+}
+
+
+/*! Opens a new window that shows the already downloaded user usage conditions.
+*/
+
+void
+UserLoginWindow::_ViewUserUsageConditions()
+{
+	if (fUserUsageConditions == NULL)
+		debugger("the usage conditions should be set");
+	UserUsageConditionsWindow* window = new UserUsageConditionsWindow(
+		fModel, *fUserUsageConditions);
+	window->Show();
 }

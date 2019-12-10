@@ -2,8 +2,6 @@ SubDir HAIKU_TOP src bin ;
 
 HAIKU_MULTIPLE_LOCALIZED_TARGETS on $(SUBDIR) = 1 ;
 
-SetSubDirSupportedPlatformsBeOSCompatible ;
-
 AddSubDirSupportedPlatforms libbe_test ;
 
 UsePrivateHeaders app interface shared storage support tracker usb ;
@@ -50,7 +48,6 @@ StdBinCommands
 	rescan.c
 	system_time.cpp
 	unchop.c
-	uptime.cpp
 	vmstat.cpp
 	: : $(haiku-utils_rsrc) ;
 
@@ -121,15 +118,17 @@ StdBinCommands
 	resattr.cpp
 	screeninfo.cpp
 	setarch.cpp
+	setcontrollook.cpp
 	setdecor.cpp
 	settype.cpp
 	spybmessage.cpp
 	urlwrapper.cpp
-	: be [ TargetLibsupc++ ] : $(haiku-utils_rsrc) ;
+	: be [ TargetLibstdc++ ] [ TargetLibsupc++ ] : $(haiku-utils_rsrc) ;
 
 # standard commands that need libbe.so, libsupc++.so, and libshared.a
 StdBinCommands
 	ramdisk.cpp
+	resizefs.cpp
 	: shared be [ TargetLibsupc++ ] : $(haiku-utils_rsrc) ;
 
 # standard commands that need libbe.so, libbnetapi.so, libsupc++.so

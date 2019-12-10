@@ -17,7 +17,7 @@
 #include "Colorsets.h"
 
 
-// #define TRACE_MANDELBROT_ENGINE
+//#define TRACE_MANDELBROT_ENGINE
 #ifdef TRACE_MANDELBROT_ENGINE
 #	include <stdio.h>
 #	define TRACE(x...) printf(x)
@@ -32,14 +32,18 @@ FractalEngine::FractalEngine(BHandler* parent, BLooper* looper)
 	fWidth(0), fHeight(0),
 	fRenderBuffer(NULL),
 	fRenderBufferLen(0),
+	fSubsampling(2),
 	fMessenger(parent, looper),
+	fRenderStopping(false),
+	fRenderStopped(true),
+	fResizing(false),
 	fIterations(1024),
 	fColorset(Colorset_Royal)
 {
 	fDoSet = &FractalEngine::DoSet_Mandelbrot;
 
 	fRenderSem = create_sem(0, "RenderSem");
-	fRenderStoppedSem = create_sem(0,"RenderStopped");
+	fRenderStoppedSem = create_sem(0, "RenderStopped");
 
 	system_info info;
 	get_system_info(&info);
@@ -59,6 +63,8 @@ FractalEngine::FractalEngine(BHandler* parent, BLooper* looper)
 
 FractalEngine::~FractalEngine()
 {
+	delete_sem(fRenderSem);
+	delete_sem(fRenderStoppedSem);
 }
 
 
@@ -91,37 +97,46 @@ void FractalEngine::MessageReceived(BMessage* msg)
 	case MSG_SET_ITERATIONS:
 		fIterations = msg->GetUInt16("iterations", 0);
 		break;
+	case MSG_SET_SUBSAMPLING:
+		fSubsampling = msg->GetUInt8("subsampling", 1);
+		break;
 
 	case MSG_RESIZE: {
-		TRACE("Got MSG_RESIZE threads rendering\n");
-		if (fStopRender) {
+		TRACE("Got MSG_RESIZE\n");
+		if (fResizing) {
 			// Will be true throughout this whole handler. Set false at the end
 			TRACE("Breaking out of MSG_RESIZE handler\n");
 			break;
 		}
+		fResizing = true;
 		StopRender();
 
-		delete fRenderBuffer;
+		delete[] fRenderBuffer;
 		fRenderBuffer = NULL;
 
 		fWidth = msg->GetUInt16("width", 320);
 		fHeight = msg->GetUInt16("height", 240);
 
-		TRACE("Creating new buffer. width %u height %u\n", fWidth, fHeight);
 		fRenderBufferLen = fWidth * fHeight * 3;
 		fRenderBuffer = new uint8[fRenderBufferLen];
+		TRACE("New buffer width %u height %u ptr = %p\n",
+			  fWidth, fHeight, fRenderBuffer);
+
 		memset(fRenderBuffer, 0, fRenderBufferLen);
 
 		BMessage message(MSG_BUFFER_CREATED);
 		fMessenger.SendMessage(&message);
 
-		fStopRender = false;
+		fResizing = false;
 		break;
 	}
 	case MSG_RENDER: {
 		TRACE("Got MSG_RENDER.\n");
+		if (fResizing)
+			break;
+
+		// Stop the render if one is already running
 		StopRender();
-		fStopRender = false;
 		Render(msg->GetDouble("locationX", 0), msg->GetDouble("locationY", 0),
 			msg->GetDouble("size", 0.005));
 		break;
@@ -132,6 +147,7 @@ void FractalEngine::MessageReceived(BMessage* msg)
 
 		int32 threadsStopped;
 		get_sem_count(fRenderStoppedSem, &threadsStopped);
+		TRACE("threadsStopped = %d\n",threadsStopped);
 		if (threadsStopped == fThreadCount) {
 			TRACE("Done rendering!\n");
 			BMessage message(MSG_RENDER_COMPLETE);
@@ -149,36 +165,57 @@ void FractalEngine::MessageReceived(BMessage* msg)
 
 void FractalEngine::WriteToBitmap(BBitmap* bitmap)
 {
+	Lock();
+	BSize size = bitmap->Bounds().Size();
+	if (size.IntegerWidth() != fWidth || size.IntegerHeight() != fHeight) {
+		// some resize happened and now this won't work.
+		Unlock();
+		return;
+	}
+	TRACE("Drawing from = %p\n",fRenderBuffer);
 	bitmap->ImportBits(fRenderBuffer,
 		fRenderBufferLen, fWidth * 3, 0,
 		B_RGB24);
+	Unlock();
 }
+
 
 void FractalEngine::StopRender()
 {
-	if (fRenderStopped)
+	if (fRenderStopped || fRenderStopping) {
+		// if fRenderStopped is true, then render is already stopped,
+		// so we can't stop it again!
+		// if fStopRender is true, then the fRenderStoppedSem are already
+		// trying to be acquired, so stuff would break if we tried to acquire
+		// them again.
 		return;
-	fRenderStopped = true;
-		// true if another call to StopRender() won't work properly because
-		// the fRenderStoppedSem semaphores have already been acquired.
+	}
+	fRenderStopping = true;
 	TRACE("Stopping render...\n");
-	fStopRender = true;
-	for (uint i = 0; i<fThreadCount; i++)
+	for (uint i = 0; i < fThreadCount; i++) {
+		TRACE("Stopping thread %d\n",i);
 		acquire_sem(fRenderStoppedSem);
+			// wait till all the threads are stopped...
+	}
+	int32 threadsStopped;
+	get_sem_count(fRenderStoppedSem, &threadsStopped);
+	TRACE("stopped sem count after stop = %d\n",threadsStopped);
+	fRenderStopping = false;
+	fRenderStopped = true;
 
 	TRACE("Render stopped.\n");
-		// note that fStopRender is NOT set to false at the end here.
-		// This is to allow the message handlers to use this variable to
-		// block duplication of stuff.
 }
 
 
 void FractalEngine::Render(double locationX, double locationY, double size)
 {
+	if (fRenderStopping)
+		debugger("Error: Render shouldn't be called while fRenderStopping = true\n");
+	if (!fRenderStopped)
+		debugger("Error: Render already running\n");
+
 	fRenderStopped = false;
 		// This means that future Render calls will need to call stop render
-	if (fStopRender)
-		debugger("Error: Render shouldn't be called while fStopRender = true\n");
 
 	fLocationX = locationX;
 	fLocationY = locationY;
@@ -204,8 +241,6 @@ status_t FractalEngine::RenderThread(void* data)
 	}
 
 	while (true) {
-		release_sem(engine->fRenderStoppedSem);
-
 		TRACE("Thread %d awaiting semaphore...\n", threadNum);
 		acquire_sem(engine->fRenderSem);
 		TRACE("Thread %d got semaphore!\n", threadNum);
@@ -230,17 +265,24 @@ status_t FractalEngine::RenderThread(void* data)
 					// halfHeight-(halfHeight-1)-1 = 0
 			}
 
-			if (engine->fStopRender) {
+			if (engine->fRenderStopping) {
 				TRACE("Thread %d stopping\n", threadNum);
-				break; // Restart the loop to update width, height, etc.
+
+				// Restart the loop to release fRenderStoppedSem and tell
+				// the main thread that this thread is stopped, as well as
+				// to update width, height, etc.
+				break;
 			}
 		}
 
-		if (!engine->fStopRender) {
+		if (!engine->fRenderStopping) {
+			// if we got here, then this thread has finished rendering.
 			BMessage message(FractalEngine::MSG_THREAD_RENDER_COMPLETE);
 			message.AddUInt8("thread", threadNum);
 			engine->PostMessage(&message);
 		}
+
+		release_sem(engine->fRenderStoppedSem);
 	}
 	return B_OK;
 }
@@ -251,19 +293,38 @@ void FractalEngine::RenderPixel(uint32 x, uint32 y)
 	double real = (x * fSize + fLocationX) - (fWidth / 2 * fSize);
 	double imaginary = (y * -(fSize) + fLocationY) - (fHeight / 2 * -(fSize));
 
-	int32 iterToEscape = (this->*fDoSet)(real, imaginary);
-	uint16 loc = 0;
-	if (iterToEscape == -1)
-		// Didn't escape.
-		loc = 999;
-	else
-		loc = 998 - (iterToEscape % 999);
+	double subsampleDelta = fSize / fSubsampling;
+	uint16 nSamples = fSubsampling * fSubsampling;
+
+	int16 totalR = 0;
+	int16 totalG = 0;
+	int16 totalB = 0;
+	for (uint8 subX = 0; subX < fSubsampling; subX++) {
+		for (uint8 subY = 0; subY < fSubsampling; subY++) {
+			double sampleReal = real + subX * subsampleDelta;
+			double sampleImaginary = imaginary + subY * subsampleDelta;
+
+			int32 sampleIterToEscape = (this->*fDoSet)(sampleReal, sampleImaginary);
+
+			uint16 sampleLoc = 0;
+			if (sampleIterToEscape == -1)
+				// Didn't escape.
+				sampleLoc = 999;
+			else
+				sampleLoc = 998 - (sampleIterToEscape % 999);
+			sampleLoc *= 3;
+
+			totalR += fColorset[sampleLoc + 0];
+			totalG += fColorset[sampleLoc + 1];
+			totalB += fColorset[sampleLoc + 2];
+		}
+	}
+
 
 	uint32 offsetBase = fWidth * y * 3 + x * 3;
-	loc *= 3;
-	fRenderBuffer[offsetBase + 2] = fColorset[loc + 0]; // fRenderBuffer is BGR
-	fRenderBuffer[offsetBase + 1] = fColorset[loc + 1];
-	fRenderBuffer[offsetBase + 0] = fColorset[loc + 2];
+	fRenderBuffer[offsetBase + 2] = totalR / nSamples; // fRenderBuffer is BGR
+	fRenderBuffer[offsetBase + 1] = totalG / nSamples;
+	fRenderBuffer[offsetBase + 0] = totalB / nSamples;
 }
 
 

@@ -25,6 +25,7 @@ public:
 		MSG_CHANGE_SET = 'Frct',
 		MSG_SET_PALETTE,
 		MSG_SET_ITERATIONS,
+		MSG_SET_SUBSAMPLING,
 		MSG_RESIZE,
 		MSG_BUFFER_CREATED,
 		MSG_RENDER,
@@ -45,19 +46,26 @@ private:
 	uint8* fRenderBuffer;
 	uint32 fRenderBufferLen;
 
+	uint8 fSubsampling;
+		// 1 disables subsampling.
+
 	BMessenger fMessenger;
 
 	uint8 fThreadCount;
 	thread_id fRenderThreads[MAX_RENDER_THREADS];
 	sem_id fRenderSem;
+		// released to tell threads to start running
 	sem_id fRenderStoppedSem;
+		// released by threads when done rendering or otherwise stopped
 
-	bool fStopRender;
+	bool fRenderStopping;
+		// true when the render is trying to be stopped
 	bool fRenderStopped;
+	bool fResizing;
 
-	double fLocationX;
-	double fLocationY;
+	double fLocationX, fLocationY;
 	double fSize;
+		// the width on the complex plane of a single pixel
 
 	uint16 fIterations;
 

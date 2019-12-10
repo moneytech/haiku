@@ -1,6 +1,6 @@
 /*
  * Copyright 2013-2014, Stephan Aßmus <superstippi@gmx.de>.
- * Copyright 2016-2018, Andrew Lindesay <apl@lindesay.co.nz>.
+ * Copyright 2016-2019, Andrew Lindesay <apl@lindesay.co.nz>.
  * All rights reserved. Distributed under the terms of the MIT License.
  */
 #ifndef PACKAGE_INFO_H
@@ -9,10 +9,10 @@
 
 #include <set>
 
+#include <Language.h>
 #include <Referenceable.h>
 #include <package/PackageInfo.h>
 
-#include "DateTime.h"
 #include "List.h"
 #include "PackageInfoListener.h"
 #include "SharedBitmap.h"
@@ -21,25 +21,44 @@
 class BPath;
 
 
+/*! This class represents a language that is supported by the Haiku
+    Depot Server system.  This may differ from the set of languages
+    that are supported in the platform itself.
+*/
+
+class Language : public BReferenceable, public BLanguage {
+public:
+								Language(const char* language,
+									const BString& serverName,
+									bool isPopular);
+								Language(const Language& other);
+
+			status_t			GetName(BString& name,
+									const BLanguage* displayLanguage = NULL
+									) const;
+			bool				IsPopular() const
+									{ return fIsPopular; }
+
+private:
+			BString				fServerName;
+			bool				fIsPopular;
+};
+
+
 class UserInfo {
 public:
 								UserInfo();
 								UserInfo(const BString& nickName);
-								UserInfo(const BitmapRef& avatar,
-									const BString& nickName);
 								UserInfo(const UserInfo& other);
 
 			UserInfo&			operator=(const UserInfo& other);
 			bool				operator==(const UserInfo& other) const;
 			bool				operator!=(const UserInfo& other) const;
 
-			const BitmapRef&	Avatar() const
-									{ return fAvatar; }
 			const BString&		NickName() const
 									{ return fNickName; }
 
 private:
-			BitmapRef			fAvatar;
 			BString				fNickName;
 };
 
@@ -52,8 +71,7 @@ public:
 									const BString& comment,
 									const BString& language,
 									const BString& packageVersion,
-									int32 upVotes, int32 downVotes,
-									const BDateTime& createTimestamp);
+									uint64 createTimestamp);
 								UserRating(const UserRating& other);
 
 			UserRating&			operator=(const UserRating& other);
@@ -70,12 +88,7 @@ public:
 									{ return fRating; }
 			const BString&		PackageVersion() const
 									{ return fPackageVersion; }
-
-			int32				UpVotes() const
-									{ return fUpVotes; }
-			int32				DownVotes() const
-									{ return fDownVotes; }
-			const BDateTime&	CreateTimestamp() const
+			const uint64		CreateTimestamp() const
 									{ return fCreateTimestamp; }
 private:
 			UserInfo			fUserInfo;
@@ -83,9 +96,8 @@ private:
 			BString				fComment;
 			BString				fLanguage;
 			BString				fPackageVersion;
-			int32				fUpVotes;
-			int32				fDownVotes;
-			BDateTime			fCreateTimestamp;
+			uint64				fCreateTimestamp;
+				// milliseconds since epoc
 };
 
 
@@ -167,8 +179,7 @@ private:
 class PackageCategory : public BReferenceable {
 public:
 								PackageCategory();
-								PackageCategory(const BitmapRef& icon,
-									const BString& label,
+								PackageCategory(const BString& code,
 									const BString& name);
 								PackageCategory(const PackageCategory& other);
 
@@ -176,15 +187,12 @@ public:
 			bool				operator==(const PackageCategory& other) const;
 			bool				operator!=(const PackageCategory& other) const;
 
-			const BitmapRef&	Icon() const
-									{ return fIcon; }
-			const BString&		Label() const
-									{ return fLabel; }
+			const BString&		Code() const
+									{ return fCode; }
 			const BString&		Name() const
 									{ return fName; }
 private:
-			BitmapRef			fIcon;
-			BString				fLabel;
+			BString				fCode;
 			BString				fName;
 };
 
@@ -423,13 +431,10 @@ public:
 
 			bool				AddPackage(const PackageInfoRef& package);
 
-			int32				PackageIndexByName(const BString& packageName);
+			int32				PackageIndexByName(const BString& packageName)
+									const;
 
 			void				SyncPackages(const PackageList& packages);
-
-			void				SetBaseURL(const BString& baseURL);
-			const BString&		BaseURL() const
-									{ return fBaseURL; }
 
 			void				SetURL(const BString& URL);
 			const BString&		URL() const
@@ -449,9 +454,6 @@ private:
 			PackageList			fPackages;
 			BString				fWebAppRepositoryCode;
 			BString				fWebAppRepositorySourceCode;
-			BString				fBaseURL;
-				// this is the URL at which the configured repository will be
-				// accessed to get data.
 			BString				fURL;
 				// this is actually a unique identifier for the repository.
 };

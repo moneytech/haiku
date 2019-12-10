@@ -41,6 +41,7 @@ of their respective holders. All rights reserved.
 #include <strings.h>
 #include <sys/stat.h>
 #include <sys/utsname.h>
+#include <syslog.h>
 #include <unistd.h>
 
 #include <AppFileInfo.h>
@@ -79,6 +80,7 @@ of their respective holders. All rights reserved.
 
 #include <CharacterSetRoster.h>
 
+#include "AttributeUtilities.h"
 #include "Content.h"
 #include "Enclosures.h"
 #include "FieldMsg.h"
@@ -146,6 +148,11 @@ static const uint32 kByAttributeItem = 'Fbya';
 	// taken from src/kits/tracker/FindPanel.h
 static const uint32 kByForumlaItem = 'Fbyq';
 	// taken from src/kits/tracker/FindPanel.h
+static const int kCopyBufferSize = 64 * 1024;	// 64 KB
+
+static const char* kSameRecipientItem = B_TRANSLATE("Same recipient");
+static const char* kSameSenderItem = B_TRANSLATE("Same sender");
+static const char* kSameSubjectItem = B_TRANSLATE("Same subject");
 
 
 // static bitmap cache
@@ -359,11 +366,11 @@ TMailWindow::TMailWindow(BRect rect, const char* title, TMailApp* app,
 		new BMessage(M_FIND_AGAIN), 'G'));
 	if (!fIncoming) {
 		menu->AddSeparatorItem();
-		fQuote = new BMenuItem(B_TRANSLATE("Quote"),
-			new BMessage(M_QUOTE), '\'');
+		fQuote = new BMenuItem(B_TRANSLATE("Increase quote level"),
+			new BMessage(M_ADD_QUOTE_LEVEL), '+');
 		menu->AddItem(fQuote);
-		fRemoveQuote = new BMenuItem(B_TRANSLATE("Remove quote"),
-			new BMessage(M_REMOVE_QUOTE), '\'', B_SHIFT_KEY);
+		fRemoveQuote = new BMenuItem(B_TRANSLATE("Decrease quote level"),
+			new BMessage(M_SUB_QUOTE_LEVEL), '-');
 		menu->AddItem(fRemoveQuote);
 
 		menu->AddSeparatorItem();
@@ -376,12 +383,12 @@ TMailWindow::TMailWindow(BRect rect, const char* title, TMailApp* app,
 	menu->AddSeparatorItem();
 	menu->AddItem(item = new BMenuItem(
 		B_TRANSLATE("Settings" B_UTF8_ELLIPSIS),
-		new BMessage(M_PREFS),','));
+		new BMessage(M_PREFS)));
 	item->SetTarget(be_app);
 	fMenuBar->AddItem(menu);
 	menu->AddItem(item = new BMenuItem(
 		B_TRANSLATE("Accounts" B_UTF8_ELLIPSIS),
-		new BMessage(M_ACCOUNTS),'-'));
+		new BMessage(M_ACCOUNTS)));
 	item->SetTarget(be_app);
 
 	// View Menu
@@ -1455,8 +1462,8 @@ TMailWindow::MessageReceived(BMessage* msg)
 			FindWindow::FindAgain(this);
 			break;
 
-		case M_QUOTE:
-		case M_REMOVE_QUOTE:
+		case M_ADD_QUOTE_LEVEL:
+		case M_SUB_QUOTE_LEVEL:
 			PostMessage(msg->what, fContentView);
 			break;
 
@@ -1515,10 +1522,16 @@ TMailWindow::MessageReceived(BMessage* msg)
 
 			BPoint where;
 			if (msg->FindPoint("where", &where) != B_OK) {
-				BRect bounds = fToolBar->Bounds();
-				where = fToolBar->ConvertToScreen(BPoint(
-					(bounds.right - bounds.left) / 2,
-					(bounds.bottom - bounds.top) / 2));
+				BRect rect;
+				BButton* button = fToolBar->FindButton(M_SIG_MENU);
+				if (button != NULL)
+					rect = button->Frame();
+				else
+					rect = fToolBar->Bounds();
+
+				where = button->ConvertToScreen(BPoint(
+					((rect.right - rect.left) / 2) - 16,
+					(rect.bottom - rect.top) / 2));
 			}
 
 			if ((item = menu->Go(where, false, true)) != NULL) {
@@ -1670,6 +1683,41 @@ TMailWindow::MessageReceived(BMessage* msg)
 			}
 			break;
 
+		case M_QUERY_RECIPIENT:
+		{
+			BString searchText(fHeaderView->To());
+			if (searchText != "") {
+				_LaunchQuery(kSameRecipientItem, B_MAIL_ATTR_TO,
+					searchText);
+			}
+			break;
+		}
+
+		case M_QUERY_SENDER:
+		{
+			BString searchText(fHeaderView->From());
+			if (searchText != "") {
+				_LaunchQuery(kSameSenderItem, B_MAIL_ATTR_FROM,
+					searchText);
+			}
+			break;
+		}
+
+		case M_QUERY_SUBJECT:
+		{
+			// If there's no thread attribute (e.g. new mail) use subject
+			BString searchText(fHeaderView->Subject());
+			BNode node(fRef);
+			if (node.InitCheck() == B_OK)
+				node.ReadAttrString(B_MAIL_ATTR_THREAD, &searchText);
+
+			if (searchText != "") {
+				// query for subject as sent mails have no thread attribute
+				_LaunchQuery(kSameSubjectItem, B_MAIL_ATTR_SUBJECT,
+					searchText);
+			}
+			break;
+		}
 		case M_EDIT_QUERIES:
 		{
 			BPath path;
@@ -2910,14 +2958,14 @@ TMailWindow::OpenMessage(const entry_ref* ref, uint32 characterSetForDecoding)
 			BMessage msg(REFS_RECEIVED);
 			entry_ref enc_ref;
 
-			char* s = strtok((char*)string.String(), ":");
-			while (s != NULL) {
-				BEntry entry(s, true);
+			BStringList list;
+			string.Split(":", false, list);
+			for (int32 i = 0; i < list.CountStrings(); i++) {
+				BEntry entry(list.StringAt(i), true);
 				if (entry.Exists()) {
 					entry.GetRef(&enc_ref);
 					msg.AddRef("refs", &enc_ref);
 				}
-				s = strtok(NULL, ":");
 			}
 			AddEnclosure(&msg);
 		}
@@ -3032,9 +3080,12 @@ TMailWindow::_RebuildQueryMenu(bool firstTime)
 		delete item;
 	}
 
-	fQueryMenu->AddItem(new BMenuItem(B_TRANSLATE("Edit queries"
-			B_UTF8_ELLIPSIS),
-		new BMessage(M_EDIT_QUERIES), 'E', B_SHIFT_KEY));
+	fQueryMenu->AddItem(new BMenuItem(kSameRecipientItem,
+			new BMessage(M_QUERY_RECIPIENT)));
+	fQueryMenu->AddItem(new BMenuItem(kSameSenderItem,
+			new BMessage(M_QUERY_SENDER)));
+	fQueryMenu->AddItem(new BMenuItem(kSameSubjectItem,
+			new BMessage(M_QUERY_SUBJECT)));
 
 	bool queryItemsAdded = false;
 
@@ -3069,8 +3120,11 @@ TMailWindow::_RebuildQueryMenu(bool firstTime)
 		free(queryString);
 	}
 
-	if (queryItemsAdded)
-		fQueryMenu->AddItem(new BSeparatorItem(), 1);
+	fQueryMenu->AddItem(new BSeparatorItem());
+
+	fQueryMenu->AddItem(new BMenuItem(B_TRANSLATE("Edit queries"
+			B_UTF8_ELLIPSIS),
+		new BMessage(M_EDIT_QUERIES), 'E', B_SHIFT_KEY));
 }
 
 
@@ -3179,6 +3233,65 @@ TMailWindow::_BuildQueryString(BEntry* entry) const
 	}
 
 	return strdup(queryString.String());
+}
+
+
+void
+TMailWindow::_LaunchQuery(const char* title, const char* attribute,
+	BString text)
+{
+/*	ToDo:
+	If the search attribute is To or From, it'd be nice to parse the
+	search text to separate the email address and user name.
+	Then search for 'name || address' to get all mails of people,
+	never mind the account or mail config they sent from.
+*/
+	text.ReplaceAll(" ", "*"); // query on MAIL:track demands * for space
+	text.ReplaceAll("\"", "\\\"");
+
+	BString* term = new BString("((");
+	term->Append(attribute);
+	term->Append("==\"*");
+	term->Append(text);
+	term->Append("*\")&&(BEOS:TYPE==\"text/x-email\"))");
+
+	BPath queryPath;
+	if (find_directory(B_USER_CACHE_DIRECTORY, &queryPath) != B_OK)
+		return;
+	queryPath.Append("Mail");
+	if ((create_directory(queryPath.Path(), 0777)) != B_OK)
+		return;
+	queryPath.Append(title);
+	BFile query(queryPath.Path(), B_WRITE_ONLY | B_CREATE_FILE | B_ERASE_FILE);
+	if (query.InitCheck() != B_OK)
+		return;
+
+	BNode queryNode(queryPath.Path());
+	if (queryNode.InitCheck() != B_OK)
+		return;
+
+	// Copy layout from DefaultQueryTemplates
+	BPath templatePath;
+	find_directory(B_USER_SETTINGS_DIRECTORY, &templatePath);
+	templatePath.Append("Tracker/DefaultQueryTemplates/text_x-email");
+	BNode templateNode(templatePath.Path());
+
+	if (templateNode.InitCheck() == B_OK) {
+		if (CopyAttributes(templateNode, queryNode) != B_OK) {
+			syslog(LOG_INFO, "Mail: copying x-email DefaultQueryTemplate "
+				"attributes failed");
+		}
+	}
+
+	queryNode.WriteAttrString("_trk/qrystr", term);
+	BNodeInfo nodeInfo(&queryNode);
+	nodeInfo.SetType("application/x-vnd.Be-query");
+
+	// Launch query
+	BEntry entry(queryPath.Path());
+	entry_ref ref;
+	if (entry.GetRef(&ref) == B_OK)
+		be_roster->Launch(&ref);
 }
 
 

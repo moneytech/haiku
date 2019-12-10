@@ -1,6 +1,6 @@
 /*
  * Copyright 2013-2014, Stephan Aßmus <superstippi@gmx.de>.
- * Copyright 2018, Andrew Lindesay <apl@lindesay.co.nz>.
+ * Copyright 2018-2019, Andrew Lindesay <apl@lindesay.co.nz>.
  * All rights reserved. Distributed under the terms of the MIT License.
  */
 
@@ -16,7 +16,6 @@
 #include <CardLayout.h>
 #include <Catalog.h>
 #include <ColumnListView.h>
-#include <DateFormat.h>
 #include <Font.h>
 #include <GridView.h>
 #include <LayoutBuilder.h>
@@ -36,10 +35,10 @@
 #include <package/hpkg/PackageContentHandler.h>
 #include <package/hpkg/PackageEntry.h>
 
-#include "BitmapButton.h"
 #include "BitmapView.h"
 #include "LinkView.h"
 #include "LinkedBitmapView.h"
+#include "LocaleUtils.h"
 #include "MarkupTextView.h"
 #include "MessagePackageListener.h"
 #include "PackageActionHandler.h"
@@ -900,11 +899,9 @@ public:
 		}
 
 		{
-			BDateFormat dateFormat;
-			BString createTimestampPresentation;
-
-			dateFormat.Format(createTimestampPresentation,
-				rating.CreateTimestamp().Date(), B_MEDIUM_DATE_FORMAT);
+			BString createTimestampPresentation =
+				LocaleUtils::TimestampToDateTimeString(
+					rating.CreateTimestamp());
 
 			BString ratingContextDescription(
 				B_TRANSLATE("%hd.timestamp% (version %hd.version%)"));
@@ -1050,8 +1047,6 @@ public:
 			.Add(scrollView, 1.0f)
 			.SetInsets(B_USE_DEFAULT_SPACING, -1.0f, -1.0f, -1.0f)
 		;
-
-		_InitPreferredLanguages();
 	}
 
 	virtual ~UserRatingsView()
@@ -1114,32 +1109,8 @@ public:
 	}
 
 private:
-	void _InitPreferredLanguages()
-	{
-		fPreferredLanguages.Clear();
-
-		BLocaleRoster* localeRoster = BLocaleRoster::Default();
-		if (localeRoster == NULL)
-			return;
-
-		BMessage preferredLanguages;
-		if (localeRoster->GetPreferredLanguages(&preferredLanguages) != B_OK)
-			return;
-
-		BString language;
-		int32 index = 0;
-		while (preferredLanguages.FindString("language", index++,
-				&language) == B_OK) {
-			BString languageCode;
-			language.CopyInto(languageCode, 0, 2);
-				fPreferredLanguages.Add(languageCode);
-		}
-	}
-
-private:
 	BGroupLayout*			fRatingContainerLayout;
 	RatingSummaryView*		fRatingSummaryView;
-	StringList				fPreferredLanguages;
 };
 
 

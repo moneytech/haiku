@@ -6,14 +6,9 @@
 #define _HTTP_STREAMER_PLUGIN_H
 
 
-#include <Streamer.h>
+#include "StreamerPlugin.h"
 
-using BCodecKit::BMediaPlugin;
-using BCodecKit::BStreamer;
-using BCodecKit::BStreamerPlugin;
-
-
-class HTTPStreamer : public BStreamer
+class HTTPStreamer : public Streamer
 {
 public:
 								HTTPStreamer();
@@ -23,10 +18,10 @@ public:
 };
 
 
-class HTTPStreamerPlugin : public BStreamerPlugin
+class HTTPStreamerPlugin : public StreamerPlugin
 {
 public:
-	virtual	BStreamer*			NewStreamer();
+	virtual	Streamer*			NewStreamer();
 };
 
 #endif // _HTTP_STREAMER_PLUGIN_H

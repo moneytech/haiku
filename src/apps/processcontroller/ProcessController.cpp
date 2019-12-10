@@ -456,7 +456,8 @@ ProcessController::MessageReceived(BMessage *message)
 				}
 				if (last) {
 					alert = new BAlert(B_TRANSLATE("Info"),
-						B_TRANSLATE("This is the last active processor...\n"
+						B_TRANSLATE("This is the last active processor"
+						B_UTF8_ELLIPSIS "\n"
 						"You can't turn it off!"),
 						B_TRANSLATE("That's no Fun!"), NULL, NULL,
 						B_WIDTH_AS_USUAL, B_WARNING_ALERT);
@@ -622,10 +623,11 @@ ProcessController::DoDraw(bool force)
 	}
 	// interspace
 	float right = left + gCPUcount * (barWidth + barGap) - barGap;
+	float leftMem = bounds.Width() - memWidth;
 		// right of CPU frame...
 	if (force && Parent()) {
 		SetHighColor(Parent()->ViewColor());
-		FillRect(BRect(right + 1, top - 1, right + 2, bottom + 1));
+		FillRect(BRect(right + 1, top - 1, leftMem, bottom + 1));
 	}
 
 	if (force) {
@@ -637,7 +639,7 @@ ProcessController::DoDraw(bool force)
 					BPoint(left + x * barWidth + x - 1, bottom));
 		}
 	}
-	float leftMem = bounds.Width() - memWidth;
+
 	if (force)
 		StrokeRect(BRect(leftMem - 1, top - 1, leftMem + memWidth, bottom + 1));
 

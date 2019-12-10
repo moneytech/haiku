@@ -1,7 +1,7 @@
 /*
  * Copyright 2013-2014, Stephan Aßmus <superstippi@gmx.de>.
  * Copyright 2013, Rene Gollent <rene@gollent.com>.
- * Copyright 2016-2018, Andrew Lindesay <apl@lindesay.co.nz>.
+ * Copyright 2016-2019, Andrew Lindesay <apl@lindesay.co.nz>.
  * All rights reserved. Distributed under the terms of the MIT License.
  */
 
@@ -15,13 +15,46 @@
 #include <Path.h>
 
 
+// #pragma mark - Language
+
+
+Language::Language(const char* language, const BString& serverName,
+	bool isPopular)
+	:
+	BLanguage(language),
+	fServerName(serverName),
+	fIsPopular(isPopular)
+{
+}
+
+
+Language::Language(const Language& other)
+	:
+	BLanguage(other.Code()),
+	fServerName(other.fServerName),
+	fIsPopular(other.fIsPopular)
+{
+}
+
+
+status_t
+Language::GetName(BString& name,
+	const BLanguage* displayLanguage) const
+{
+	status_t result = BLanguage::GetName(name, displayLanguage);
+
+	if (result == B_OK && (name.IsEmpty() || name == Code()))
+		name.SetTo(fServerName);
+
+	return result;
+}
+
 
 // #pragma mark - UserInfo
 
 
 UserInfo::UserInfo()
 	:
-	fAvatar(),
 	fNickName()
 {
 }
@@ -29,15 +62,6 @@ UserInfo::UserInfo()
 
 UserInfo::UserInfo(const BString& nickName)
 	:
-	fAvatar(),
-	fNickName(nickName)
-{
-}
-
-
-UserInfo::UserInfo(const BitmapRef& avatar, const BString& nickName)
-	:
-	fAvatar(avatar),
 	fNickName(nickName)
 {
 }
@@ -45,7 +69,6 @@ UserInfo::UserInfo(const BitmapRef& avatar, const BString& nickName)
 
 UserInfo::UserInfo(const UserInfo& other)
 	:
-	fAvatar(other.fAvatar),
 	fNickName(other.fNickName)
 {
 }
@@ -54,7 +77,6 @@ UserInfo::UserInfo(const UserInfo& other)
 UserInfo&
 UserInfo::operator=(const UserInfo& other)
 {
-	fAvatar = other.fAvatar;
 	fNickName = other.fNickName;
 	return *this;
 }
@@ -63,8 +85,7 @@ UserInfo::operator=(const UserInfo& other)
 bool
 UserInfo::operator==(const UserInfo& other) const
 {
-	return fAvatar == other.fAvatar
-		&& fNickName == other.fNickName;
+	return fNickName == other.fNickName;
 }
 
 
@@ -85,28 +106,22 @@ UserRating::UserRating()
 	fComment(),
 	fLanguage(),
 	fPackageVersion(),
-	fUpVotes(0),
-	fDownVotes(0),
-	fCreateTimestamp()
+	fCreateTimestamp(0)
 {
 }
 
 
 UserRating::UserRating(const UserInfo& userInfo, float rating,
 		const BString& comment, const BString& language,
-		const BString& packageVersion, int32 upVotes, int32 downVotes,
-		const BDateTime& createTimestamp)
+		const BString& packageVersion, uint64 createTimestamp)
 	:
 	fUserInfo(userInfo),
 	fRating(rating),
 	fComment(comment),
 	fLanguage(language),
 	fPackageVersion(packageVersion),
-	fUpVotes(upVotes),
-	fDownVotes(downVotes),
-	fCreateTimestamp()
+	fCreateTimestamp(createTimestamp)
 {
-	fCreateTimestamp.SetTime_t(createTimestamp.Time_t());
 }
 
 
@@ -117,11 +132,8 @@ UserRating::UserRating(const UserRating& other)
 	fComment(other.fComment),
 	fLanguage(other.fLanguage),
 	fPackageVersion(other.fPackageVersion),
-	fUpVotes(other.fUpVotes),
-	fDownVotes(other.fDownVotes),
-	fCreateTimestamp()
+	fCreateTimestamp(other.fCreateTimestamp)
 {
-	fCreateTimestamp.SetTime_t(other.CreateTimestamp().Time_t());
 }
 
 
@@ -133,9 +145,7 @@ UserRating::operator=(const UserRating& other)
 	fComment = other.fComment;
 	fLanguage = other.fLanguage;
 	fPackageVersion = other.fPackageVersion;
-	fUpVotes = other.fUpVotes;
-	fDownVotes = other.fDownVotes;
-	fCreateTimestamp.SetTime_t(other.fCreateTimestamp.Time_t());
+	fCreateTimestamp = other.fCreateTimestamp;
 	return *this;
 }
 
@@ -148,8 +158,6 @@ UserRating::operator==(const UserRating& other) const
 		&& fComment == other.fComment
 		&& fLanguage == other.fLanguage
 		&& fPackageVersion == other.fPackageVersion
-		&& fUpVotes == other.fUpVotes
-		&& fDownVotes == other.fDownVotes
 		&& fCreateTimestamp == other.fCreateTimestamp;
 }
 
@@ -337,19 +345,16 @@ PublisherInfo::operator!=(const PublisherInfo& other) const
 PackageCategory::PackageCategory()
 	:
 	BReferenceable(),
-	fIcon(),
-	fLabel(),
+	fCode(),
 	fName()
 {
 }
 
 
-PackageCategory::PackageCategory(const BitmapRef& icon, const BString& label,
-		const BString& name)
+PackageCategory::PackageCategory(const BString& code, const BString& name)
 	:
 	BReferenceable(),
-	fIcon(icon),
-	fLabel(label),
+	fCode(code),
 	fName(name)
 {
 }
@@ -358,8 +363,7 @@ PackageCategory::PackageCategory(const BitmapRef& icon, const BString& label,
 PackageCategory::PackageCategory(const PackageCategory& other)
 	:
 	BReferenceable(),
-	fIcon(other.fIcon),
-	fLabel(other.fLabel),
+	fCode(other.fCode),
 	fName(other.fName)
 {
 }
@@ -368,8 +372,7 @@ PackageCategory::PackageCategory(const PackageCategory& other)
 PackageCategory&
 PackageCategory::operator=(const PackageCategory& other)
 {
-	fIcon = other.fIcon;
-	fLabel = other.fLabel;
+	fCode = other.fCode;
 	fName = other.fName;
 	return *this;
 }
@@ -378,9 +381,7 @@ PackageCategory::operator=(const PackageCategory& other)
 bool
 PackageCategory::operator==(const PackageCategory& other) const
 {
-	return fIcon == other.fIcon
-		&& fLabel == other.fLabel
-		&& fName == other.fName;
+	return fCode == other.fCode && fName == other.fName;
 }
 
 
@@ -1036,13 +1037,40 @@ PackageInfo::_NotifyListenersImmediate(uint32 changes)
 }
 
 
+// #pragma mark - Sorting Functions
+
+
+/*! This function is used with the List class in order to facilitate fast
+    ordered inserting of packages.
+ */
+
+static int32
+PackageCompare(const PackageInfoRef& p1, const PackageInfoRef& p2)
+{
+	return p1->Name().Compare(p2->Name());
+}
+
+
+/*! This function is used with the List class in order to facilitate fast
+    searching of packages.
+ */
+
+static int32
+PackageFixedNameCompare(const void* context,
+	const PackageInfoRef& package)
+{
+	const BString* packageName = static_cast<const BString*>(context);
+	return packageName->Compare(package->Name());
+}
+
+
 // #pragma mark -
 
 
 DepotInfo::DepotInfo()
 	:
 	fName(),
-	fPackages(),
+	fPackages(&PackageCompare, &PackageFixedNameCompare),
 	fWebAppRepositoryCode()
 {
 }
@@ -1051,7 +1079,7 @@ DepotInfo::DepotInfo()
 DepotInfo::DepotInfo(const BString& name)
 	:
 	fName(name),
-	fPackages(),
+	fPackages(&PackageCompare, &PackageFixedNameCompare),
 	fWebAppRepositoryCode(),
 	fWebAppRepositorySourceCode()
 {
@@ -1064,7 +1092,6 @@ DepotInfo::DepotInfo(const DepotInfo& other)
 	fPackages(other.fPackages),
 	fWebAppRepositoryCode(other.fWebAppRepositoryCode),
 	fWebAppRepositorySourceCode(other.fWebAppRepositorySourceCode),
-	fBaseURL(other.fBaseURL),
 	fURL(other.fURL)
 {
 }
@@ -1075,7 +1102,6 @@ DepotInfo::operator=(const DepotInfo& other)
 {
 	fName = other.fName;
 	fPackages = other.fPackages;
-	fBaseURL = other.fBaseURL;
 	fURL = other.fURL;
 	fWebAppRepositoryCode = other.fWebAppRepositoryCode;
 	fWebAppRepositorySourceCode = other.fWebAppRepositorySourceCode;
@@ -1098,12 +1124,6 @@ DepotInfo::operator!=(const DepotInfo& other) const
 }
 
 
-static int32 PackageCompare(const PackageInfoRef& p1, const PackageInfoRef& p2)
-{
-	return p1->Name().Compare(p2->Name());
-}
-
-
 /*! This method will insert the package into the list of packages
     in order so that the list of packages remains in order.
  */
@@ -1111,23 +1131,14 @@ static int32 PackageCompare(const PackageInfoRef& p1, const PackageInfoRef& p2)
 bool
 DepotInfo::AddPackage(const PackageInfoRef& package)
 {
-	return fPackages.AddOrdered(package, &PackageCompare);
-}
-
-
-static int32
-PackageFixedNameCompare(const void* context,
-	const PackageInfoRef& package)
-{
-	const BString* packageName = static_cast<const BString*>(context);
-	return packageName->Compare(package->Name());
+ 	return fPackages.Add(package);
 }
 
 
 int32
-DepotInfo::PackageIndexByName(const BString& packageName)
+DepotInfo::PackageIndexByName(const BString& packageName) const
 {
-	return fPackages.BinarySearch(&packageName, &PackageFixedNameCompare);
+	return fPackages.Search(&packageName);
 }
 
 
@@ -1142,8 +1153,6 @@ DepotInfo::SyncPackages(const PackageList& otherPackages)
 		for (int32 j = packages.CountItems() - 1; j >= 0; j--) {
 			const PackageInfoRef& package = packages.ItemAtFast(j);
 			if (package->Name() == otherPackage->Name()) {
-//				printf("%s: found package: '%s'\n", fName.String(),
-//					package->Name().String());
 				package->SetState(otherPackage->State());
 				package->SetLocalFilePath(otherPackage->LocalFilePath());
 				package->SetSystemDependency(
@@ -1166,13 +1175,6 @@ DepotInfo::SyncPackages(const PackageList& otherPackages)
 			package->Name().String());
 		fPackages.Remove(package);
 	}
-}
-
-
-void
-DepotInfo::SetBaseURL(const BString& baseURL)
-{
-	fBaseURL = baseURL;
 }
 
 

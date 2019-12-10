@@ -179,8 +179,7 @@ BMediaClient::Unbind(BMediaInput* input, BMediaOutput* output)
 {
 	CALLED();
 
-	if (input == NULL
-		|| input == NULL)
+	if (input == NULL || output == NULL)
 		return B_ERROR;
 
 	if (input->fOwner != this || output->fOwner != this)
@@ -336,9 +335,6 @@ BMediaClient::Start()
 			err = BMediaRoster::CurrentRoster()->StartNode(
 				remoteNode, fNode->TimeSource()->Now());
 	}
-
-	if (err != B_OK)
-		return err;
 
 	return BMediaRoster::CurrentRoster()->StartNode(
 		fNode->Node(), fNode->TimeSource()->Now());

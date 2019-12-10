@@ -3,7 +3,7 @@
  * Copyright 2013-2014, Stephan Aßmus <superstippi@gmx.de>.
  * Copyright 2013, Rene Gollent, rene@gollent.com.
  * Copyright 2013, Ingo Weinhold, ingo_weinhold@gmx.de.
- * Copyright 2016-2018, Andrew Lindesay <apl@lindesay.co.nz>.
+ * Copyright 2016-2019, Andrew Lindesay <apl@lindesay.co.nz>.
  * Copyright 2017, Julian Harnath <julian.harnath@rwth-aachen.de>.
  * All rights reserved. Distributed under the terms of the MIT License.
  */
@@ -32,33 +32,23 @@
 #include <StringView.h>
 #include <TabView.h>
 
-#include <package/Context.h>
-#include <package/manager/Exceptions.h>
-#include <package/manager/RepositoryBuilder.h>
-#include <package/RefreshRepositoryRequest.h>
-#include <package/PackageRoster.h>
-#include "package/RepositoryCache.h"
-#include <package/solver/SolverPackage.h>
-#include <package/solver/SolverProblem.h>
-#include <package/solver/SolverProblemSolution.h>
-#include <package/solver/SolverRepository.h>
-#include <package/solver/SolverResult.h>
-
+#include "AppUtils.h"
 #include "AutoDeleter.h"
 #include "AutoLocker.h"
 #include "DecisionProvider.h"
 #include "FeaturedPackagesView.h"
 #include "FilterView.h"
-#include "JobStateListener.h"
 #include "Logger.h"
 #include "PackageInfoView.h"
 #include "PackageListView.h"
 #include "PackageManager.h"
+#include "ProcessCoordinator.h"
+#include "ProcessCoordinatorFactory.h"
 #include "RatePackageWindow.h"
-#include "RepositoryUrlUtils.h"
 #include "support.h"
 #include "ScreenshotWindow.h"
 #include "UserLoginWindow.h"
+#include "UserUsageConditionsWindow.h"
 #include "WorkStatusView.h"
 
 
@@ -67,20 +57,23 @@
 
 
 enum {
-	MSG_MODEL_WORKER_DONE		= 'mmwd',
-	MSG_REFRESH_REPOS			= 'mrrp',
-	MSG_MANAGE_REPOS			= 'mmrp',
-	MSG_SOFTWARE_UPDATER		= 'mswu',
-	MSG_LOG_IN					= 'lgin',
-	MSG_LOG_OUT					= 'lgot',
-	MSG_AUTHORIZATION_CHANGED	= 'athc',
-	MSG_PACKAGE_CHANGED			= 'pchd',
+	MSG_BULK_LOAD_DONE						= 'mmwd',
+	MSG_REFRESH_REPOS						= 'mrrp',
+	MSG_MANAGE_REPOS						= 'mmrp',
+	MSG_SOFTWARE_UPDATER					= 'mswu',
+	MSG_LOG_IN								= 'lgin',
+	MSG_LOG_OUT								= 'lgot',
+	MSG_AUTHORIZATION_CHANGED				= 'athc',
+	MSG_CATEGORIES_LIST_CHANGED				= 'clic',
+	MSG_PACKAGE_CHANGED						= 'pchd',
+	MSG_WORK_STATUS_CHANGE					= 'wsch',
+	MSG_WORK_STATUS_CLEAR					= 'wscl',
 
-	MSG_SHOW_FEATURED_PACKAGES	= 'sofp',
-	MSG_SHOW_AVAILABLE_PACKAGES	= 'savl',
-	MSG_SHOW_INSTALLED_PACKAGES	= 'sins',
-	MSG_SHOW_SOURCE_PACKAGES	= 'ssrc',
-	MSG_SHOW_DEVELOP_PACKAGES	= 'sdvl'
+	MSG_SHOW_FEATURED_PACKAGES				= 'sofp',
+	MSG_SHOW_AVAILABLE_PACKAGES				= 'savl',
+	MSG_SHOW_INSTALLED_PACKAGES				= 'sins',
+	MSG_SHOW_SOURCE_PACKAGES				= 'ssrc',
+	MSG_SHOW_DEVELOP_PACKAGES				= 'sdvl'
 };
 
 
@@ -104,9 +97,9 @@ struct RefreshWorkerParameters {
 };
 
 
-class MessageModelListener : public ModelListener {
+class MainWindowModelListener : public ModelListener {
 public:
-	MessageModelListener(const BMessenger& messenger)
+	MainWindowModelListener(const BMessenger& messenger)
 		:
 		fMessenger(messenger)
 	{
@@ -116,6 +109,12 @@ public:
 	{
 		if (fMessenger.IsValid())
 			fMessenger.SendMessage(MSG_AUTHORIZATION_CHANGED);
+	}
+
+	virtual void CategoryListChanged()
+	{
+		if (fMessenger.IsValid())
+			fMessenger.SendMessage(MSG_CATEGORIES_LIST_CHANGED);
 	}
 
 private:
@@ -132,11 +131,10 @@ MainWindow::MainWindow(const BMessage& settings)
 	fUserMenu(NULL),
 	fLogInItem(NULL),
 	fLogOutItem(NULL),
-	fModelListener(new MessageModelListener(BMessenger(this)), true),
-	fBulkLoadStateMachine(&fModel),
-	fTerminating(false),
-	fSinglePackageMode(false),
-	fModelWorker(B_BAD_THREAD_ID)
+	fUsersUserUsageConditionsMenuItem(NULL),
+	fModelListener(new MainWindowModelListener(BMessenger(this)), true),
+	fBulkLoadProcessCoordinator(NULL),
+	fSinglePackageMode(false)
 {
 	BMenuBar* menuBar = new BMenuBar("Main Menu");
 	_BuildMenu(menuBar);
@@ -146,6 +144,7 @@ MainWindow::MainWindow(const BMessage& settings)
 	set_small_font(userMenuBar);
 	userMenuBar->SetExplicitMaxSize(BSize(B_SIZE_UNSET,
 		menuBar->MaxSize().height));
+	_UpdateAuthorization();
 
 	fFilterView = new FilterView();
 	fFeaturedPackagesView = new FeaturedPackagesView();
@@ -207,7 +206,7 @@ MainWindow::MainWindow(const BMessage& settings)
 	else
 		fListTabs->Select(1);
 
-	_RestoreUserName(settings);
+	_RestoreNickname(settings);
 	_RestoreWindowFrame(settings);
 
 	atomic_set(&fPackagesToShowListID, 0);
@@ -216,7 +215,7 @@ MainWindow::MainWindow(const BMessage& settings)
 	BPackageRoster().StartWatching(this,
 		B_WATCH_PACKAGE_INSTALLATION_LOCATIONS);
 
-	_StartRefreshWorker();
+	_StartBulkLoad();
 
 	_InitWorkerThreads();
 }
@@ -232,11 +231,10 @@ MainWindow::MainWindow(const BMessage& settings, const PackageInfoRef& package)
 	fUserMenu(NULL),
 	fLogInItem(NULL),
 	fLogOutItem(NULL),
-	fModelListener(new MessageModelListener(BMessenger(this)), true),
-	fBulkLoadStateMachine(&fModel),
-	fTerminating(false),
-	fSinglePackageMode(true),
-	fModelWorker(B_BAD_THREAD_ID)
+	fUsersUserUsageConditionsMenuItem(NULL),
+	fModelListener(new MainWindowModelListener(BMessenger(this)), true),
+	fBulkLoadProcessCoordinator(NULL),
+	fSinglePackageMode(true)
 {
 	fFilterView = new FilterView();
 	fPackageListView = new PackageListView(fModel.Lock());
@@ -250,7 +248,7 @@ MainWindow::MainWindow(const BMessage& settings, const PackageInfoRef& package)
 	fModel.AddListener(fModelListener);
 
 	// Restore settings
-	_RestoreUserName(settings);
+	_RestoreNickname(settings);
 	_RestoreWindowFrame(settings);
 
 	fPackageInfoView->SetPackage(package);
@@ -262,10 +260,6 @@ MainWindow::MainWindow(const BMessage& settings, const PackageInfoRef& package)
 MainWindow::~MainWindow()
 {
 	BPackageRoster().StopWatching(this);
-
-	fTerminating = true;
-	if (fModelWorker >= 0)
-		wait_for_thread(fModelWorker, NULL);
 
 	delete_sem(fPendingActionsSem);
 	if (fPendingActionsWorker >= 0)
@@ -292,9 +286,11 @@ MainWindow::QuitRequested()
 	StoreSettings(settings);
 
 	BMessage message(MSG_MAIN_WINDOW_CLOSED);
-	message.AddMessage("window settings", &settings);
+	message.AddMessage(KEY_WINDOW_SETTINGS, &settings);
 
 	be_app->PostMessage(&message);
+
+	_StopBulkLoad();
 
 	return true;
 }
@@ -304,14 +300,9 @@ void
 MainWindow::MessageReceived(BMessage* message)
 {
 	switch (message->what) {
-		case MSG_MODEL_WORKER_DONE:
-		{
-			fModelWorker = B_BAD_THREAD_ID;
-			_AdoptModel();
-			_UpdateAvailableRepositories();
-			fWorkStatusView->SetIdle();
+		case MSG_BULK_LOAD_DONE:
+			_BulkLoadCompleteReceived();
 			break;
-		}
 		case B_SIMPLE_DATA:
 		case B_REFS_RECEIVED:
 			// TODO: ?
@@ -320,11 +311,15 @@ MainWindow::MessageReceived(BMessage* message)
 		case B_PACKAGE_UPDATE:
 			// TODO: We should do a more selective update depending on the
 			// "event", "location", and "change count" fields!
-			_StartRefreshWorker(false);
+			_StartBulkLoad(false);
 			break;
 
 		case MSG_REFRESH_REPOS:
-			_StartRefreshWorker(true);
+			_StartBulkLoad(true);
+			break;
+
+		case MSG_WORK_STATUS_CHANGE:
+			_HandleWorkStatusChangeMessageReceived(message);
 			break;
 
 		case MSG_MANAGE_REPOS:
@@ -340,11 +335,23 @@ MainWindow::MessageReceived(BMessage* message)
 			break;
 
 		case MSG_LOG_OUT:
-			fModel.SetUsername("");
+			fModel.SetNickname("");
+			break;
+
+		case MSG_VIEW_LATEST_USER_USAGE_CONDITIONS:
+			_ViewUserUsageConditions(LATEST);
+			break;
+
+		case MSG_VIEW_USERS_USER_USAGE_CONDITIONS:
+			_ViewUserUsageConditions(USER);
 			break;
 
 		case MSG_AUTHORIZATION_CHANGED:
 			_UpdateAuthorization();
+			break;
+
+		case MSG_CATEGORIES_LIST_CHANGED:
+			fFilterView->AdoptModel(fModel);
 			break;
 
 		case MSG_SHOW_FEATURED_PACKAGES:
@@ -437,12 +444,12 @@ MainWindow::MessageReceived(BMessage* message)
 
 		case MSG_CATEGORY_SELECTED:
 		{
-			BString name;
-			if (message->FindString("name", &name) != B_OK)
-				name = "";
+			BString code;
+			if (message->FindString("code", &code) != B_OK)
+				code = "";
 			{
 				BAutolock locker(fModel.Lock());
-				fModel.SetCategory(name);
+				fModel.SetCategory(code);
 			}
 			_AdoptModel();
 			break;
@@ -641,7 +648,7 @@ MainWindow::StoreSettings(BMessage& settings) const
 		settings.AddBool("show source packages", fModel.ShowSourcePackages());
 	}
 
-	settings.AddString("username", fModel.Username());
+	settings.AddString("username", fModel.Nickname());
 }
 
 
@@ -685,8 +692,9 @@ void
 MainWindow::_BuildMenu(BMenuBar* menuBar)
 {
 	BMenu* menu = new BMenu(B_TRANSLATE("Tools"));
-	menu->AddItem(new BMenuItem(B_TRANSLATE("Refresh repositories"),
-		new BMessage(MSG_REFRESH_REPOS)));
+	fRefreshRepositoriesItem = new BMenuItem(
+		B_TRANSLATE("Refresh repositories"), new BMessage(MSG_REFRESH_REPOS));
+	menu->AddItem(fRefreshRepositoriesItem);
 	menu->AddItem(new BMenuItem(B_TRANSLATE("Manage repositories"
 		B_UTF8_ELLIPSIS), new BMessage(MSG_MANAGE_REPOS)));
 	menu->AddItem(new BMenuItem(B_TRANSLATE("Check for updates"
@@ -738,17 +746,29 @@ MainWindow::_BuildUserMenu(BMenuBar* menuBar)
 		new BMessage(MSG_LOG_OUT));
 	fUserMenu->AddItem(fLogOutItem);
 
+	BMenuItem *latestUserUsageConditionsMenuItem =
+		new BMenuItem(B_TRANSLATE("View latest usage conditions"
+			B_UTF8_ELLIPSIS),
+			new BMessage(MSG_VIEW_LATEST_USER_USAGE_CONDITIONS));
+	fUserMenu->AddItem(latestUserUsageConditionsMenuItem);
+
+	fUsersUserUsageConditionsMenuItem =
+		new BMenuItem(B_TRANSLATE("View agreed usage conditions"
+			B_UTF8_ELLIPSIS),
+			new BMessage(MSG_VIEW_USERS_USER_USAGE_CONDITIONS));
+	fUserMenu->AddItem(fUsersUserUsageConditionsMenuItem);
+
 	menuBar->AddItem(fUserMenu);
 }
 
 
 void
-MainWindow::_RestoreUserName(const BMessage& settings)
+MainWindow::_RestoreNickname(const BMessage& settings)
 {
-	BString username;
-	if (settings.FindString("username", &username) == B_OK
-		&& username.Length() > 0) {
-		fModel.SetUsername(username);
+	BString nickname;
+	if (settings.FindString("username", &nickname) == B_OK
+		&& nickname.Length() > 0) {
+		fModel.SetNickname(nickname);
 	}
 }
 
@@ -832,10 +852,9 @@ MainWindow::_InitWorkerThreads()
 void
 MainWindow::_AdoptModel()
 {
-	fVisiblePackages = fModel.CreatePackageList();
-
 	{
 		AutoLocker<BLocker> modelLocker(fModel.Lock());
+		fVisiblePackages = fModel.CreatePackageList();
 		AutoLocker<BLocker> listLocker(fPackagesToShowListLock);
 		fPackagesToShowList = fVisiblePackages;
 		atomic_add(&fPackagesToShowListID, 1);
@@ -886,407 +905,123 @@ MainWindow::_ClearPackage()
 
 
 void
-MainWindow::_RefreshRepositories(bool force)
+MainWindow::_StopBulkLoad()
 {
-	if (fSinglePackageMode)
-		return;
+	AutoLocker<BLocker> lock(&fBulkLoadProcessCoordinatorLock);
 
-	BPackageRoster roster;
-	BStringList repositoryNames;
-
-	status_t result = roster.GetRepositoryNames(repositoryNames);
-	if (result != B_OK)
-		return;
-
-	DecisionProvider decisionProvider;
-	JobStateListener listener;
-	BContext context(decisionProvider, listener);
-
-	BRepositoryCache cache;
-	for (int32 i = 0; i < repositoryNames.CountStrings(); ++i) {
-		const BString& repoName = repositoryNames.StringAt(i);
-		BRepositoryConfig repoConfig;
-		result = roster.GetRepositoryConfig(repoName, &repoConfig);
-		if (result != B_OK) {
-			// TODO: notify user
-			continue;
-		}
-
-		if (roster.GetRepositoryCache(repoName, &cache) != B_OK || force) {
-			try {
-				BRefreshRepositoryRequest refreshRequest(context, repoConfig);
-
-				result = refreshRequest.Process();
-			} catch (BFatalErrorException ex) {
-				BString message(B_TRANSLATE("An error occurred while "
-					"refreshing the repository: %error% (%details%)"));
- 				message.ReplaceFirst("%error%", ex.Message());
-				message.ReplaceFirst("%details%", ex.Details());
-				_NotifyUser("Error", message.String());
-			} catch (BException ex) {
-				BString message(B_TRANSLATE("An error occurred while "
-					"refreshing the repository: %error%"));
-				message.ReplaceFirst("%error%", ex.Message());
-				_NotifyUser("Error", message.String());
-			}
-		}
+	if (fBulkLoadProcessCoordinator != NULL) {
+		printf("will stop full update process coordinator\n");
+		fBulkLoadProcessCoordinator->Stop();
 	}
 }
 
 
 void
-MainWindow::_RefreshPackageList(bool force)
+MainWindow::_StartBulkLoad(bool force)
 {
-	if (fSinglePackageMode)
-		return;
+	AutoLocker<BLocker> lock(&fBulkLoadProcessCoordinatorLock);
 
-	if (Logger::IsDebugEnabled())
-		printf("will refresh the package list\n");
-
-	BPackageRoster roster;
-	BStringList repositoryNames;
-
-	status_t result = roster.GetRepositoryNames(repositoryNames);
-	if (result != B_OK)
-		return;
-
-	std::vector<DepotInfo> depots(repositoryNames.CountStrings());
-	for (int32 i = 0; i < repositoryNames.CountStrings(); i++) {
-		const BString& repoName = repositoryNames.StringAt(i);
-		DepotInfo depotInfo = DepotInfo(repoName);
-
-		BRepositoryConfig repoConfig;
-		status_t getRepositoryConfigStatus = roster.GetRepositoryConfig(
-			repoName, &repoConfig);
-
-		if (getRepositoryConfigStatus == B_OK) {
-			depotInfo.SetBaseURL(repoConfig.BaseURL());
-			depotInfo.SetURL(repoConfig.URL());
-
-			if (Logger::IsDebugEnabled()) {
-				printf("local repository [%s] info;\n"
-					" * base url [%s]\n"
-					" * url [%s]\n",
-					repoName.String(), repoConfig.BaseURL().String(),
-					repoConfig.URL().String());
-			}
-		} else {
-			printf("unable to obtain the repository config for local "
-				"repository '%s'; %s\n",
-				repoName.String(), strerror(getRepositoryConfigStatus));
-		}
-
-		depots[i] = depotInfo;
+	if (fBulkLoadProcessCoordinator == NULL) {
+		fBulkLoadProcessCoordinator
+			= ProcessCoordinatorFactory::CreateBulkLoadCoordinator(
+				this,
+					// PackageInfoListener
+				this,
+					// ProcessCoordinatorListener
+				&fModel, force);
+		fBulkLoadProcessCoordinator->Start();
+		fRefreshRepositoriesItem->SetEnabled(false);
 	}
+}
 
-	PackageManager manager(B_PACKAGE_INSTALLATION_LOCATION_HOME);
-	try {
-		manager.Init(PackageManager::B_ADD_INSTALLED_REPOSITORIES
-			| PackageManager::B_ADD_REMOTE_REPOSITORIES);
-	} catch (BException ex) {
-		BString message(B_TRANSLATE("An error occurred while "
-			"initializing the package manager: %message%"));
-		message.ReplaceFirst("%message%", ex.Message());
-		_NotifyUser("Error", message.String());
-		return;
-	}
 
-	BObjectList<BSolverPackage> packages;
-	result = manager.Solver()->FindPackages("",
-		BSolver::B_FIND_CASE_INSENSITIVE | BSolver::B_FIND_IN_NAME
-			| BSolver::B_FIND_IN_SUMMARY | BSolver::B_FIND_IN_DESCRIPTION
-			| BSolver::B_FIND_IN_PROVIDES,
-		packages);
-	if (result != B_OK) {
-		BString message(B_TRANSLATE("An error occurred while "
-			"obtaining the package list: %message%"));
-		message.ReplaceFirst("%message%", strerror(result));
-		_NotifyUser("Error", message.String());
-		return;
-	}
+/*! This method is called when there is some change in the bulk load process.
+    A change may mean that a new process has started / stopped etc... or it
+    may mean that the entire coordinator has finished.
+*/
 
-	if (packages.IsEmpty())
-		return;
+void
+MainWindow::CoordinatorChanged(ProcessCoordinatorState& coordinatorState)
+{
+	AutoLocker<BLocker> lock(&fBulkLoadProcessCoordinatorLock);
 
-	PackageInfoMap foundPackages;
-		// if a given package is installed locally, we will potentially
-		// get back multiple entries, one for each local installation
-		// location, and one for each remote repository the package
-		// is available in. The above map is used to ensure that in such
-		// cases we consolidate the information, rather than displaying
-		// duplicates
-	PackageInfoMap remotePackages;
-		// any package that we find in a remote repository goes in this map.
-		// this is later used to discern which packages came from a local
-		// installation only, as those must be handled a bit differently
-		// upon uninstallation, since we'd no longer be able to pull them
-		// down remotely.
-	BStringList systemFlaggedPackages;
-		// any packages flagged as a system package are added to this list.
-		// such packages cannot be uninstalled, nor can any of their deps.
-	PackageInfoMap systemInstalledPackages;
-		// any packages installed in system are added to this list.
-		// This is later used for dependency resolution of the actual
-		// system packages in order to compute the list of protected
-		// dependencies indicated above.
-
-	for (int32 i = 0; i < packages.CountItems(); i++) {
-		BSolverPackage* package = packages.ItemAt(i);
-		const BPackageInfo& repoPackageInfo = package->Info();
-		const BString repositoryName = package->Repository()->Name();
-		PackageInfoRef modelInfo;
-		PackageInfoMap::iterator it = foundPackages.find(
-			repoPackageInfo.Name());
-		if (it != foundPackages.end())
-			modelInfo.SetTo(it->second);
+	if (fBulkLoadProcessCoordinator == coordinatorState.Coordinator()) {
+		if (!coordinatorState.IsRunning())
+			_BulkLoadProcessCoordinatorFinished(coordinatorState);
 		else {
-			// Add new package info
-			modelInfo.SetTo(new(std::nothrow) PackageInfo(repoPackageInfo),
-				true);
-
-			if (modelInfo.Get() == NULL)
-				return;
-
-			foundPackages[repoPackageInfo.Name()] = modelInfo;
+			_NotifyWorkStatusChange(coordinatorState.Message(),
+				coordinatorState.Progress());
+				// show the progress to the user.
 		}
-
-		// The package list here considers those packages that are installed
-		// in the system as well as those that exist in remote repositories.
-		// It is better if the 'depot name' is from the remote repository
-		// because then it will be possible to perform a rating on it later.
-
-		if (modelInfo->DepotName().IsEmpty()
-			|| modelInfo->DepotName() == REPOSITORY_NAME_SYSTEM
-			|| modelInfo->DepotName() == REPOSITORY_NAME_INSTALLED) {
-			modelInfo->SetDepotName(repositoryName);
-		}
-
-		modelInfo->AddListener(this);
-
-		BSolverRepository* repository = package->Repository();
-		BPackageManager::RemoteRepository* remoteRepository =
-			dynamic_cast<BPackageManager::RemoteRepository*>(repository);
-
-		if (remoteRepository != NULL) {
-
-			std::vector<DepotInfo>::iterator it;
-
-			for (it = depots.begin(); it != depots.end(); it++) {
-				if (RepositoryUrlUtils::EqualsOnUrlOrBaseUrl(
-					it->URL(), remoteRepository->Config().URL(),
-					it->BaseURL(), remoteRepository->Config().BaseURL())) {
-					break;
-				}
-			}
-
-			if (it == depots.end()) {
-				if (Logger::IsDebugEnabled()) {
-					printf("pkg [%s] repository [%s] not recognized"
-						" --> ignored\n",
-						modelInfo->Name().String(), repositoryName.String());
-				}
-			} else {
-				it->AddPackage(modelInfo);
-
-				if (Logger::IsTraceEnabled()) {
-					printf("pkg [%s] assigned to [%s]\n",
-						modelInfo->Name().String(), repositoryName.String());
-				}
-			}
-
-			remotePackages[modelInfo->Name()] = modelInfo;
-		} else {
-			if (repository == static_cast<const BSolverRepository*>(
-					manager.SystemRepository())) {
-				modelInfo->AddInstallationLocation(
-					B_PACKAGE_INSTALLATION_LOCATION_SYSTEM);
-				if (!modelInfo->IsSystemPackage()) {
-					systemInstalledPackages[repoPackageInfo.FileName()]
-						= modelInfo;
-				}
-			} else if (repository == static_cast<const BSolverRepository*>(
-					manager.HomeRepository())) {
-				modelInfo->AddInstallationLocation(
-					B_PACKAGE_INSTALLATION_LOCATION_HOME);
-			}
-		}
-
-		if (modelInfo->IsSystemPackage())
-			systemFlaggedPackages.Add(repoPackageInfo.FileName());
-	}
-
-	bool wasEmpty = fModel.Depots().IsEmpty();
-	if (force || wasEmpty)
-		fBulkLoadStateMachine.Stop();
-
-	BAutolock lock(fModel.Lock());
-
-	if (force)
-		fModel.Clear();
-
-	// filter remote packages from the found list
-	// any packages remaining will be locally installed packages
-	// that weren't acquired from a repository
-	for (PackageInfoMap::iterator it = remotePackages.begin();
-			it != remotePackages.end(); it++) {
-		foundPackages.erase(it->first);
-	}
-
-	if (!foundPackages.empty()) {
-		BString repoName = B_TRANSLATE("Local");
-		depots.push_back(DepotInfo(repoName));
-
-		for (PackageInfoMap::iterator it = foundPackages.begin();
-				it != foundPackages.end(); ++it) {
-			depots.back().AddPackage(it->second);
+	} else {
+		if (Logger::IsInfoEnabled()) {
+			printf("unknown process coordinator changed\n");
 		}
 	}
-
-	{
-		std::vector<DepotInfo>::iterator it;
-
-		for (it = depots.begin(); it != depots.end(); it++) {
-			if (fModel.HasDepot(it->Name()))
-				fModel.SyncDepot(*it);
-			else
-				fModel.AddDepot(*it);
-		}
-	}
-
-	// start retrieving package icons and average ratings
-	if (force || wasEmpty) {
-			fBulkLoadStateMachine.Start();
-	}
-
-	// compute the OS package dependencies
-	try {
-		// create the solver
-		BSolver* solver;
-		status_t error = BSolver::Create(solver);
-		if (error != B_OK)
-			throw BFatalErrorException(error, "Failed to create solver.");
-
-		ObjectDeleter<BSolver> solverDeleter(solver);
-		BPath systemPath;
-		error = find_directory(B_SYSTEM_PACKAGES_DIRECTORY, &systemPath);
-		if (error != B_OK) {
-			throw BFatalErrorException(error,
-				"Unable to retrieve system packages directory.");
-		}
-
-		// add the "installed" repository with the given packages
-		BSolverRepository installedRepository;
-		{
-			BRepositoryBuilder installedRepositoryBuilder(installedRepository,
-				REPOSITORY_NAME_INSTALLED);
-			for (int32 i = 0; i < systemFlaggedPackages.CountStrings(); i++) {
-				BPath packagePath(systemPath);
-				packagePath.Append(systemFlaggedPackages.StringAt(i));
-				installedRepositoryBuilder.AddPackage(packagePath.Path());
-			}
-			installedRepositoryBuilder.AddToSolver(solver, true);
-		}
-
-		// add system repository
-		BSolverRepository systemRepository;
-		{
-			BRepositoryBuilder systemRepositoryBuilder(systemRepository,
-				REPOSITORY_NAME_SYSTEM);
-			for (PackageInfoMap::iterator it = systemInstalledPackages.begin();
-					it != systemInstalledPackages.end(); it++) {
-				BPath packagePath(systemPath);
-				packagePath.Append(it->first);
-				systemRepositoryBuilder.AddPackage(packagePath.Path());
-			}
-			systemRepositoryBuilder.AddToSolver(solver, false);
-		}
-
-		// solve
-		error = solver->VerifyInstallation();
-		if (error != B_OK) {
-			throw BFatalErrorException(error, "Failed to compute packages to "
-				"install.");
-		}
-
-		BSolverResult solverResult;
-		error = solver->GetResult(solverResult);
-		if (error != B_OK) {
-			throw BFatalErrorException(error, "Failed to retrieve system "
-				"package dependency list.");
-		}
-
-		for (int32 i = 0; const BSolverResultElement* element
-				= solverResult.ElementAt(i); i++) {
-			BSolverPackage* package = element->Package();
-			if (element->Type() == BSolverResultElement::B_TYPE_INSTALL) {
-				PackageInfoMap::iterator it = systemInstalledPackages.find(
-					package->Info().FileName());
-				if (it != systemInstalledPackages.end())
-					it->second->SetSystemDependency(true);
-			}
-		}
-	} catch (BFatalErrorException ex) {
-		printf("Fatal exception occurred while resolving system dependencies: "
-			"%s, details: %s\n", strerror(ex.Error()), ex.Details().String());
-	} catch (BNothingToDoException) {
-		// do nothing
-	} catch (BException ex) {
-		printf("Exception occurred while resolving system dependencies: %s\n",
-			ex.Message().String());
-	} catch (...) {
-		printf("Unknown exception occurred while resolving system "
-			"dependencies.\n");
-	}
-
-	if (Logger::IsDebugEnabled())
-		printf("did refresh the package list\n");
 }
 
 
 void
-MainWindow::_StartRefreshWorker(bool force)
+MainWindow::_BulkLoadProcessCoordinatorFinished(
+	ProcessCoordinatorState& coordinatorState)
 {
-	if (fModelWorker != B_BAD_THREAD_ID)
-		return;
-
-	RefreshWorkerParameters* parameters = new(std::nothrow)
-		RefreshWorkerParameters(this, force);
-	if (parameters == NULL)
-		return;
-
-	fWorkStatusView->SetBusy(B_TRANSLATE("Refreshing" B_UTF8_ELLIPSIS));
-
-	ObjectDeleter<RefreshWorkerParameters> deleter(parameters);
-	fModelWorker = spawn_thread(&_RefreshModelThreadWorker, "model loader",
-		B_LOW_PRIORITY, parameters);
-
-	if (fModelWorker > 0) {
-		deleter.Detach();
-		resume_thread(fModelWorker);
+	if (coordinatorState.ErrorStatus() != B_OK) {
+		AppUtils::NotifySimpleError(
+			B_TRANSLATE("Package update error"),
+			B_TRANSLATE("While updating package data, a problem has arisen "
+				"that may cause data to be outdated or missing from the "
+				"application's display. Additional details regarding this "
+				"problem may be able to be obtained from the application "
+				"logs."));
 	}
+	BMessenger messenger(this);
+	messenger.SendMessage(MSG_BULK_LOAD_DONE);
+	// it is safe to delete the coordinator here because it is already known
+	// that all of the processes have completed and their threads will have
+	// exited safely by this point.
+	delete fBulkLoadProcessCoordinator;
+	fBulkLoadProcessCoordinator = NULL;
+	fRefreshRepositoriesItem->SetEnabled(true);
 }
 
 
-status_t
-MainWindow::_RefreshModelThreadWorker(void* arg)
+void
+MainWindow::_BulkLoadCompleteReceived()
 {
-	RefreshWorkerParameters* parameters
-		= reinterpret_cast<RefreshWorkerParameters*>(arg);
-	MainWindow* mainWindow = parameters->window;
-	ObjectDeleter<RefreshWorkerParameters> deleter(parameters);
+	_AdoptModel();
+	_UpdateAvailableRepositories();
+	fWorkStatusView->SetIdle();
+}
 
-	BMessenger messenger(mainWindow);
 
-	mainWindow->_RefreshRepositories(parameters->forceRefresh);
+/*! Sends off a message to the Window so that it can change the status view
+    on the front-end in the UI thread.
+*/
 
-	if (mainWindow->fTerminating)
-		return B_OK;
+void
+MainWindow::_NotifyWorkStatusChange(const BString& text, float progress)
+{
+	BMessage message(MSG_WORK_STATUS_CHANGE);
 
-	mainWindow->_RefreshPackageList(parameters->forceRefresh);
+	if (!text.IsEmpty())
+		message.AddString(KEY_WORK_STATUS_TEXT, text);
+	message.AddFloat(KEY_WORK_STATUS_PROGRESS, progress);
 
-	messenger.SendMessage(MSG_MODEL_WORKER_DONE);
+	this->PostMessage(&message, this);
+}
 
-	return B_OK;
+
+void
+MainWindow::_HandleWorkStatusChangeMessageReceived(const BMessage* message)
+{
+	BString text;
+	float progress;
+
+	if (message->FindString(KEY_WORK_STATUS_TEXT, &text) == B_OK)
+		fWorkStatusView->SetText(text);
+
+	if (message->FindFloat(KEY_WORK_STATUS_PROGRESS, &progress) == B_OK)
+		fWorkStatusView->SetProgress(progress);
 }
 
 
@@ -1456,17 +1191,6 @@ MainWindow::_PackagesToShowWorker(void* arg)
 
 
 void
-MainWindow::_NotifyUser(const char* title, const char* message)
-{
-	BAlert* alert = new(std::nothrow) BAlert(title, message,
-		B_TRANSLATE("Close"));
-
-	if (alert != NULL)
-		alert->Go();
-}
-
-
-void
 MainWindow::_OpenLoginWindow(const BMessage& onSuccessMessage)
 {
 	UserLoginWindow* window = new UserLoginWindow(this,
@@ -1482,11 +1206,13 @@ MainWindow::_OpenLoginWindow(const BMessage& onSuccessMessage)
 void
 MainWindow::_UpdateAuthorization()
 {
-	BString username(fModel.Username());
-	bool hasUser = !username.IsEmpty();
+	BString nickname(fModel.Nickname());
+	bool hasUser = !nickname.IsEmpty();
 
 	if (fLogOutItem != NULL)
 		fLogOutItem->SetEnabled(hasUser);
+	if (fUsersUserUsageConditionsMenuItem != NULL)
+		fUsersUserUsageConditionsMenuItem->SetEnabled(hasUser);
 	if (fLogInItem != NULL) {
 		if (hasUser)
 			fLogInItem->SetLabel(B_TRANSLATE("Switch account" B_UTF8_ELLIPSIS));
@@ -1496,11 +1222,11 @@ MainWindow::_UpdateAuthorization()
 
 	if (fUserMenu != NULL) {
 		BString label;
-		if (username.Length() == 0) {
-			label = B_TRANSLATE("Not logged in");
-		} else {
+		if (hasUser) {
 			label = B_TRANSLATE("Logged in as %User%");
-			label.ReplaceAll("%User%", username);
+			label.ReplaceAll("%User%", nickname);
+		} else {
+			label = B_TRANSLATE("Not logged in");
 		}
 		fUserMenu->Superitem()->SetLabel(label);
 	}
@@ -1587,7 +1313,7 @@ MainWindow::_RatePackage()
     	return;
 	}
 
-	if (fModel.Username().IsEmpty()) {
+	if (fModel.Nickname().IsEmpty()) {
 		BAlert* alert = new(std::nothrow) BAlert(
 			B_TRANSLATE("Not logged in"),
 			B_TRANSLATE("You need to be logged into an account before you "
@@ -1631,4 +1357,14 @@ MainWindow::_ShowScreenshot()
 		fScreenshotWindow->Activate();
 
 	fScreenshotWindow->Unlock();
+}
+
+
+void
+MainWindow::_ViewUserUsageConditions(
+	UserUsageConditionsSelectionMode mode)
+{
+	UserUsageConditionsWindow* window = new UserUsageConditionsWindow(
+		fModel, mode);
+	window->Show();
 }

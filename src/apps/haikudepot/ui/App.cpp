@@ -13,7 +13,9 @@
 #include <Catalog.h>
 #include <Entry.h>
 #include <Message.h>
+#include <package/PackageDefs.h>
 #include <package/PackageInfo.h>
+#include <package/PackageRoster.h>
 #include <Path.h>
 #include <Roster.h>
 #include <Screen.h>
@@ -68,7 +70,7 @@ App::QuitRequested()
 		_StoreSettings(windowSettings);
 	}
 
-	return true;
+	return BApplication::QuitRequested();
 }
 
 
@@ -93,7 +95,7 @@ App::MessageReceived(BMessage* message)
 		case MSG_MAIN_WINDOW_CLOSED:
 		{
 			BMessage windowSettings;
-			if (message->FindMessage("window settings",
+			if (message->FindMessage(KEY_WINDOW_SETTINGS,
 					&windowSettings) == B_OK) {
 				_StoreSettings(windowSettings);
 			}
@@ -114,6 +116,10 @@ App::MessageReceived(BMessage* message)
 
 		case MSG_SERVER_ERROR:
 			ServerHelper::AlertServerJsonRpcError(message);
+			break;
+
+		case MSG_ALERT_SIMPLE_ERROR:
+			_AlertSimpleError(message);
 			break;
 
 		case MSG_SERVER_DATA_CHANGED:
@@ -308,6 +314,29 @@ App::ArgvReceived(int32 argc, char* argv[])
 }
 
 
+/*! This method will display an alert based on a message.  This message arrives
+    from a number of possible background threads / processes in the application.
+*/
+
+void
+App::_AlertSimpleError(BMessage* message)
+{
+	BString alertTitle;
+	BString alertText;
+
+	if (message->FindString(KEY_ALERT_TEXT, &alertText) != B_OK)
+		alertText = "?";
+
+	if (message->FindString(KEY_ALERT_TITLE, &alertTitle) != B_OK)
+		alertTitle = B_TRANSLATE("Error");
+
+	BAlert* alert = new BAlert(alertTitle, alertText, B_TRANSLATE("OK"));
+
+	alert->SetFlags(alert->Flags() | B_CLOSE_ON_ESCAPE);
+	alert->Go();
+}
+
+
 // #pragma mark - private
 
 
@@ -338,6 +367,35 @@ App::_Open(const BEntry& entry)
 
 	package->SetLocalFilePath(path.Path());
 
+	// Set if the package is active
+	//
+	// TODO(leavengood): It is very awkward having to check these two locations
+	// here, and in many other places in HaikuDepot. Why do clients of the
+	// package kit have to know about these locations?
+	bool active = false;
+	BPackageKit::BPackageRoster roster;
+	status = roster.IsPackageActive(
+		BPackageKit::B_PACKAGE_INSTALLATION_LOCATION_SYSTEM, info, &active);
+	if (status != B_OK) {
+		fprintf(stderr, "Could not check if package was active in system: %s\n",
+			strerror(status));
+		return;
+	}
+	if (!active) {
+		status = roster.IsPackageActive(
+			BPackageKit::B_PACKAGE_INSTALLATION_LOCATION_HOME, info, &active);
+		if (status != B_OK) {
+			fprintf(stderr,
+				"Could not check if package was active in home: %s\n",
+				strerror(status));
+			return;
+		}
+	}
+
+	if (active) {
+		package->SetState(ACTIVATED);
+	}
+
 	BMessage settings;
 	_LoadSettings(settings);
 
@@ -358,8 +416,8 @@ bool
 App::_LoadSettings(BMessage& settings)
 {
 	if (!fSettingsRead) {
-		fSettings = true;
-		if (load_settings(&fSettings, "main_settings", "HaikuDepot") != B_OK)
+		fSettingsRead = true;
+		if (load_settings(&fSettings, KEY_MAIN_SETTINGS, "HaikuDepot") != B_OK)
 			fSettings.MakeEmpty();
 	}
 	settings = fSettings;
@@ -390,7 +448,7 @@ App::_StoreSettings(const BMessage& settings)
 		}
 	}
 
-	save_settings(&fSettings, "main_settings", "HaikuDepot");
+	save_settings(&fSettings, KEY_MAIN_SETTINGS, "HaikuDepot");
 }
 
 

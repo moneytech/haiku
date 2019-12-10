@@ -19,10 +19,12 @@ extern "C" {
 #endif
 
 extern int __gABIVersion;
+extern int __gAPIVersion;
 
 extern char _single_threaded;
 	/* This determines if a process runs single threaded or not */
 
+status_t __look_up_in_path(const char *name, char *buffer);
 status_t __parse_invoke_line(char *invoker, char ***_newArgs,
 			char * const **_oldArgs, int32 *_argCount, const char *arg0);
 status_t __get_next_image_dependency(image_id id, uint32 *cookie,
@@ -39,6 +41,8 @@ void __heap_terminate_after(void);
 void __heap_before_fork(void);
 void __heap_after_fork_child(void);
 void __heap_after_fork_parent(void);
+void __heap_thread_init(void);
+void __heap_thread_exit(void);
 
 void __init_time(addr_t commPageTable);
 void __arch_init_time(struct real_time_data *data, bool setDefaults);
@@ -46,7 +50,6 @@ bigtime_t __arch_get_system_time_offset(struct real_time_data *data);
 bigtime_t __get_system_time_offset();
 void __init_pwd_backend(void);
 void __reinit_pwd_backend_after_fork(void);
-void* __arch_get_caller(void);
 int32 __arch_get_stack_trace(addr_t* returnAddresses, int32 maxCount,
 	int32 skipFrames, addr_t stackBase, addr_t stackEnd);
 

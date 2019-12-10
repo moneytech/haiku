@@ -1,6 +1,6 @@
 /*
  * Copyright 2013-2014, Stephan Aßmus <superstippi@gmx.de>.
- * Copyright 2016-2018, Andrew Lindesay <apl@lindesay.co.nz>.
+ * Copyright 2016-2019, Andrew Lindesay <apl@lindesay.co.nz>.
  * All rights reserved. Distributed under the terms of the MIT License.
  */
 #ifndef MODEL_H
@@ -9,9 +9,9 @@
 #include <FindDirectory.h>
 #include <Locker.h>
 
-#include "AbstractServerProcess.h"
+#include "AbstractProcess.h"
+#include "LanguageModel.h"
 #include "LocalIconStore.h"
-#include "BulkLoadContext.h"
 #include "PackageInfo.h"
 #include "WebAppInterface.h"
 
@@ -37,6 +37,7 @@ public:
 	virtual						~ModelListener();
 
 	virtual	void				AuthorizationChanged() = 0;
+	virtual void				CategoryListChanged() = 0;
 };
 
 
@@ -64,6 +65,8 @@ public:
 								Model();
 	virtual						~Model();
 
+			LanguageModel&		Language();
+
 			BLocker*			Lock()
 									{ return &fLock; }
 
@@ -84,30 +87,7 @@ public:
 
 			void				Clear();
 
-			// Access to global categories
-			const CategoryRef&	CategoryAudio() const
-									{ return fCategoryAudio; }
-			const CategoryRef&	CategoryBusiness() const
-									{ return fCategoryBusiness; }
-			const CategoryRef&	CategoryDevelopment() const
-									{ return fCategoryDevelopment; }
-			const CategoryRef&	CategoryEducation() const
-									{ return fCategoryEducation; }
-			const CategoryRef&	CategoryInternetAndNetwork() const
-									{ return fCategoryInternetAndNetwork; }
-			const CategoryRef&	CategoryGames() const
-									{ return fCategoryGames; }
-			const CategoryRef&	CategoryGraphics() const
-									{ return fCategoryGraphics; }
-			const CategoryRef&	CategoryProductivity() const
-									{ return fCategoryProductivity; }
-			const CategoryRef&	CategoryScienceAndMathematics() const
-									{ return fCategoryScienceAndMathematics; }
-			const CategoryRef&	CategorySystemAndUtilities() const
-									{ return fCategorySystemAndUtilities; }
-			const CategoryRef&	CategoryVideo() const
-									{ return fCategoryVideo; }
-
+			void				AddCategories(const CategoryList& categories);
 			const CategoryList&	Categories() const
 									{ return fCategories; }
 
@@ -151,16 +131,10 @@ public:
 			void				PopulatePackage(const PackageInfoRef& package,
 									uint32 flags);
 
-			const StringList&	SupportedLanguages() const
-									{ return fSupportedLanguages; }
-
-			const BString&		PreferredLanguage() const
-									{ return fPreferredLanguage; }
-
-			void				SetUsername(BString username);
-			const BString&		Username() const;
-			void				SetAuthorization(const BString& username,
-									const BString& password,
+			void				SetNickname(BString nickname);
+			const BString&		Nickname() const;
+			void				SetAuthorization(const BString& nickname,
+									const BString& passwordClear,
 									bool storePassword);
 
 			const WebAppInterface& GetWebAppInterface() const
@@ -168,25 +142,11 @@ public:
 
 			void				ReplaceDepotByUrl(
 									const BString& URL,
-									const BString& baseURL,
 									DepotMapper* depotMapper,
 									void* context);
 
-			void				ForAllDepots(
-									void (*func)(const DepotInfo& depot,
-										void* context),
-									void* context);
-
-			void				ForAllPackages(PackageConsumer* packageConsumer,
-									void* context);
-
-			void				ForPackageByNameInDepot(
-									const BString& depotName,
-									const BString& packageName,
-									PackageConsumer* packageConsumer,
-									void* context);
-
 			status_t			IconStoragePath(BPath& path) const;
+			status_t			DumpExportReferenceDataPath(BPath& path) const;
 			status_t			DumpExportRepositoryDataPath(BPath& path) const;
 			status_t			DumpExportPkgDataPath(BPath& path,
 									const BString& repositorySourceCode) const;
@@ -194,6 +154,10 @@ public:
 			void				LogDepotsWithNoWebAppRepositoryCode() const;
 
 private:
+			void				_AddCategory(const CategoryRef& category);
+			status_t			_LocalDataPath(const BString leaf,
+									BPath& path) const;
+
 			void				_MaybeLogJsonRpcError(
 									const BMessage &responsePayload,
 									const char *sourceDescription) const;
@@ -222,24 +186,12 @@ private:
 									bool ignoreAge, time_t maxAge) const;
 
 			void				_NotifyAuthorizationChanged();
+			void				_NotifyCategoryListChanged();
 
 private:
 			BLocker				fLock;
 
 			DepotList			fDepots;
-
-			CategoryRef			fCategoryAudio;
-			CategoryRef			fCategoryBusiness;
-			CategoryRef			fCategoryDevelopment;
-			CategoryRef			fCategoryEducation;
-			CategoryRef			fCategoryGames;
-			CategoryRef			fCategoryGraphics;
-			CategoryRef			fCategoryInternetAndNetwork;
-			CategoryRef			fCategoryProductivity;
-			CategoryRef			fCategoryScienceAndMathematics;
-			CategoryRef			fCategorySystemAndUtilities;
-			CategoryRef			fCategoryVideo;
-			// TODO: Dynamic categories retrieved from web-app
 
 			CategoryList		fCategories;
 
@@ -261,9 +213,7 @@ private:
 			bool				fShowSourcePackages;
 			bool				fShowDevelopPackages;
 
-			StringList			fSupportedLanguages;
-			BString				fPreferredLanguage;
-
+			LanguageModel		fLanguageModel;
 			WebAppInterface		fWebAppInterface;
 
 			ModelListenerList	fListeners;

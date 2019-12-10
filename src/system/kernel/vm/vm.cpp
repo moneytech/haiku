@@ -805,6 +805,14 @@ map_backing_store(VMAddressSpace* addressSpace, VMCache* cache, off_t offset,
 		_area, areaName));
 	cache->AssertLocked();
 
+	if (size == 0) {
+#if KDEBUG
+		panic("map_backing_store(): called with size=0 for area '%s'!",
+			areaName);
+#endif
+		return B_BAD_VALUE;
+	}
+
 	uint32 allocationFlags = HEAP_DONT_WAIT_FOR_MEMORY
 		| HEAP_DONT_LOCK_KERNEL_SPACE;
 	int priority;
@@ -871,16 +879,16 @@ map_backing_store(VMAddressSpace* addressSpace, VMCache* cache, off_t offset,
 
 	status = addressSpace->InsertArea(area, size, addressRestrictions,
 		allocationFlags, _virtualAddress);
-	if (status != B_OK) {
-		// TODO: wait and try again once this is working in the backend
-#if 0
-		if (status == B_NO_MEMORY && addressSpec == B_ANY_KERNEL_ADDRESS) {
-			low_resource(B_KERNEL_RESOURCE_ADDRESS_SPACE, size,
-				0, 0);
-		}
-#endif
-		goto err2;
+	if (status == B_NO_MEMORY
+			&& addressRestrictions->address_specification == B_ANY_KERNEL_ADDRESS) {
+		// TODO: At present, there is no way to notify the low_resource monitor
+		// that kernel addresss space is fragmented, nor does it check for this
+		// automatically. Due to how many locks are held, we cannot wait here
+		// for space to be freed up, but it would be good to at least notify
+		// that we tried and failed to allocate some amount.
 	}
+	if (status != B_OK)
+		goto err2;
 
 	// attach the cache to the area
 	area->cache = cache;
@@ -2100,14 +2108,12 @@ vm_clone_area(team_id team, const char* name, void** address,
 
 	VMCache* cache = vm_area_get_locked_cache(sourceArea);
 
-	if (!kernel && sourceAddressSpace == VMAddressSpace::Kernel()
-		&& targetAddressSpace != VMAddressSpace::Kernel()
-		&& !(sourceArea->protection & B_USER_CLONEABLE_AREA)) {
-		// kernel areas must not be cloned in userland, unless explicitly
-		// declared user-cloneable upon construction
+	if (!kernel && sourceAddressSpace != targetAddressSpace
+		&& (sourceArea->protection & B_CLONEABLE_AREA) == 0) {
 #if KDEBUG
-		panic("attempting to clone kernel area \"%s\" (%" B_PRId32 ")!",
-			sourceArea->name, sourceID);
+		Team* team = thread_get_current_thread()->team;
+		dprintf("team \"%s\" (%" B_PRId32 ") attempted to clone area \"%s\" (%"
+			B_PRId32 ")!\n", team->Name(), team->id, sourceArea->name, sourceID);
 #endif
 		status = B_NOT_ALLOWED;
 	} else if (sourceArea->cache_type == CACHE_TYPE_NULL) {
@@ -2952,7 +2958,7 @@ display_mem(int argc, char** argv)
 	} else {
 		// number mode
 		for (i = 0; i < num; i++) {
-			uint32 value;
+			uint64 value;
 
 			if ((i % displayWidth) == 0) {
 				int32 displayed = min_c(displayWidth, (num-i)) * itemSize;
@@ -4914,6 +4920,7 @@ vm_set_area_memory_type(area_id id, phys_addr_t physicalBase, uint32 type)
 
 
 /*!	This function enforces some protection properties:
+	 - kernel areas must be W^X (after kernel startup)
 	 - if B_WRITE_AREA is set, B_KERNEL_WRITE_AREA is set as well
 	 - if only B_READ_AREA has been set, B_KERNEL_READ_AREA is also set
 	 - if no protection is specified, it defaults to B_KERNEL_READ_AREA
@@ -4922,6 +4929,12 @@ vm_set_area_memory_type(area_id id, phys_addr_t physicalBase, uint32 type)
 static void
 fix_protection(uint32* protection)
 {
+	if ((*protection & B_KERNEL_EXECUTE_AREA) != 0
+		&& ((*protection & B_KERNEL_WRITE_AREA) != 0
+			|| (*protection & B_WRITE_AREA) != 0)
+		&& !gKernelStartup)
+		panic("kernel areas cannot be both writable and executable!");
+
 	if ((*protection & B_KERNEL_PROTECTION) == 0) {
 		if ((*protection & B_USER_PROTECTION) == 0
 			|| (*protection & B_WRITE_AREA) != 0)
@@ -5977,6 +5990,11 @@ transfer_area(area_id id, void** _address, uint32 addressSpec, team_id target,
 	if (info.team != thread_get_current_thread()->team->id)
 		return B_PERMISSION_DENIED;
 
+	// We need to mark the area cloneable so the following operations work.
+	status = set_area_protection(id, info.protection | B_CLONEABLE_AREA);
+	if (status != B_OK)
+		return status;
+
 	area_id clonedArea = vm_clone_area(target, info.name, _address,
 		addressSpec, info.protection, REGION_NO_PRIVATE_MAP, id, kernel);
 	if (clonedArea < 0)
@@ -5987,6 +6005,9 @@ transfer_area(area_id id, void** _address, uint32 addressSpec, team_id target,
 		vm_delete_area(target, clonedArea, kernel);
 		return status;
 	}
+
+	// Now we can reset the protection to whatever it was before.
+	set_area_protection(clonedArea, info.protection);
 
 	// TODO: The clonedArea is B_SHARED_AREA, which is not really desired.
 
@@ -6663,7 +6684,7 @@ _user_get_memory_properties(team_id teamID, const void* address,
 // #pragma mark -- compatibility
 
 
-#if defined(__INTEL__) && B_HAIKU_PHYSICAL_BITS > 32
+#if defined(__i386__) && B_HAIKU_PHYSICAL_BITS > 32
 
 
 struct physical_entry_beos {
@@ -6778,4 +6799,4 @@ DEFINE_LIBROOT_KERNEL_SYMBOL_VERSION("__create_area_haiku", "create_area@@",
 	"BASE");
 
 
-#endif	// defined(__INTEL__) && B_HAIKU_PHYSICAL_BITS > 32
+#endif	// defined(__i386__) && B_HAIKU_PHYSICAL_BITS > 32

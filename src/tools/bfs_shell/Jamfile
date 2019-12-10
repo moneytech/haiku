@@ -12,25 +12,32 @@ DEFINES += HAIKU_BUILD_COMPATIBILITY_H ;
 		FS_SHELL
 		;
 
-	if $(DEBUG) = 0 {
-		# the gcc on BeOS doesn't compile BFS correctly with -O2 or more
+	if $(TARGET_PACKAGING_ARCH) = x86_gcc2 {
+		# GCC2 doesn't compile BFS correctly with -O2 or more
 		OPTIM = -O1 ;
 	}
 
 	defines = [ FDefines $(defines) ] ;
+
+	local c++flags = ;
+	if $(HOST_GCC_VERSION[1]) >= 3 {
+		c++flags += -std=c++11 ;
+	}
+
 	SubDirCcFlags $(defines) -Wno-multichar ;
 	SubDirC++Flags $(defines) -Wno-multichar -fno-rtti ;
+	SubDirC++Flags $(defines) $(c++flags) -Wno-multichar -fno-rtti ;
 }
 
 # platform specific libraries
 local fsShellCommandLibs ;
-if ! $(HOST_PLATFORM_BEOS_COMPATIBLE) {
+if ! $(HOST_PLATFORM_HAIKU_COMPATIBLE) {
 	fsShellCommandLibs = $(HOST_NETWORK_LIBS) ;
 }
 
 UseHeaders [ FDirName $(HAIKU_TOP) headers build ] : true ;
 
-if ! $(HOST_PLATFORM_BEOS_COMPATIBLE) {
+if ! $(HOST_PLATFORM_HAIKU_COMPATIBLE) {
 	UseHeaders [ FDirName $(HAIKU_TOP) headers build os ] : true ;
 	UseHeaders [ FDirName $(HAIKU_TOP) headers build os support ] : true ;
 }
@@ -45,7 +52,9 @@ local bfsSource =
 	BlockAllocator.cpp
 	BPlusTree.cpp
 	Attribute.cpp
+	CheckVisitor.cpp
 	Debug.cpp
+	FileSystemVisitor.cpp
 	Index.cpp
 	Inode.cpp
 	Journal.cpp

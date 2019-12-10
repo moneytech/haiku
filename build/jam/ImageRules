@@ -1553,6 +1553,12 @@ rule BuildCDBootImage image : bootfloppy : bootefi : extrafiles
 	Depends $(image) : $(bootefi) ;
 	Depends $(image) : $(extrafiles) ;
 	BOOTIMG on $(image) = $(bootfloppy) ;
+	
+	if $(HAIKU_NIGHTLY_BUILD) = 1 {
+		VOLID on $(image) = haiku-nightly-$(TARGET_ARCH) ;
+	} else {
+		VOLID on $(image) = haiku-$(HAIKU_VERSION)-$(TARGET_ARCH) ;
+	}
 
 	if $(HAIKU_ANYBOOT_LEGACY) = 1 {
 		BuildCDBootImageMBR $(image) : $(bootfloppy) $(extrafiles) ;
@@ -1565,13 +1571,14 @@ rule BuildCDBootImage image : bootfloppy : bootefi : extrafiles
 actions BuildCDBootImageMBR
 {
 	$(RM) $(<)
-	mkisofs -b $(BOOTIMG) -r -J -V bootimg -o $(<) $(>[1]) $(>[2-])
+	xorriso -as mkisofs -b $(BOOTIMG) -r -J -V $(VOLID) -o $(<) $(>[1]) $(>[2-])
 }
 
 actions BuildCDBootImageEFI
 {
 	$(RM) $(<)
-	mkisofs -b $(BOOTIMG) -eltorito-alt-boot -no-emul-boot -e $(BOOTEFI) -r -J -V bootimg -o $(<) $(>[1]) $(>[2]) $(>[3-])
+	xorriso -as mkisofs -b $(BOOTIMG) -eltorito-alt-boot -no-emul-boot -e $(BOOTEFI) \
+		-r -J -V $(VOLID) -o $(<) $(>[1]) $(>[2]) $(>[3-])
 }
 
 
@@ -1586,6 +1593,12 @@ rule BuildCDBootPPCImage image : hfsmaps : elfloader : coffloader : chrpscript
 	Depends $(image) : $(extrafiles) ;
 	Depends $(image) : $(hfsmaps) ;
 	MAPS on $(image) = $(hfsmaps) ;
+
+	if $(HAIKU_NIGHTLY_BUILD) = 1 {
+		VOLID on $(image) = haiku-nightly-$(TARGET_ARCH) ;
+	} else {
+		VOLID on $(image) = haiku-$(HAIKU_VERSION)-$(TARGET_ARCH) ;
+	}
 
 	BuildCDBootPPCImage1 $(image) : $(elfloader) $(coffloader) $(chrpscript)
 		$(extrafiles) ;
@@ -1605,13 +1618,10 @@ actions BuildCDBootPPCImage1 bind MAPS
 	# Extras (readme files, etc)
 	cp $(>[4]) $(HAIKU_OUTPUT_DIR)/cd/
 
-	mkisofs -v -hfs -part -map $(MAPS) -no-desktop -hfs-volid bootimg \
-		-V bootimg -hfs-bless $(HAIKU_OUTPUT_DIR)/cd/boot -prep-boot \
-		boot/haikuloader.xcf -r -o $(<) $(HAIKU_OUTPUT_DIR)/cd \
-	|| \
-	genisoimage -v -hfs -part -map $(MAPS) -no-desktop -hfs-volid bootimg \
-		-V bootimg -hfs-bless $(HAIKU_OUTPUT_DIR)/cd/boot -prep-boot \
-		boot/haikuloader.xcf -r -o $(<) $(HAIKU_OUTPUT_DIR)/cd
+	xorriso -as mkisofs -v -hfsplus \
+		-hfs-bless $(HAIKU_OUTPUT_DIR)/cd/boot \
+		-prep-boot-part $(HAIKU_OUTPUT_DIR)/cd/boot/haikuloader.xcf \
+		-r -J -o $(<) $(HAIKU_OUTPUT_DIR)/cd
 	$(RM) -r $(HAIKU_OUTPUT_DIR)/cd
 }
 

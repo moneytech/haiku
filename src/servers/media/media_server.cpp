@@ -435,7 +435,7 @@ ServerApp::_HandleMessage(int32 code, const void* data, size_t size)
 			request.SendReply(status, &reply, sizeof(reply));
 			break;
 		}
-		
+
 		case SERVER_RELEASE_NODE_ALL:
 		{
 			const server_release_node_request& request
@@ -922,7 +922,7 @@ ServerApp::_ControlThread(void* _server)
 void
 ServerApp::MessageReceived(BMessage* msg)
 {
-	TRACE("ServerApp::MessageReceived %lx enter\n", msg->what);
+	TRACE("ServerApp::MessageReceived %" B_PRIu32 " enter\n", msg->what);
 	switch (msg->what) {
 		case MEDIA_SERVER_REQUEST_NOTIFICATIONS:
 		case MEDIA_SERVER_CANCEL_NOTIFICATIONS:
@@ -952,7 +952,7 @@ ServerApp::MessageReceived(BMessage* msg)
 				gNodeManager->CleanupDormantFlavorInfos();
 
 			team_id id;
-			if (msg->FindInt32("team", &id) == B_OK
+			if (msg->FindInt32("be:team", &id) == B_OK
 					&& gAppManager->HasTeam(id)) {
 				gAppManager->UnregisterTeam(id);
 			}
@@ -964,7 +964,7 @@ ServerApp::MessageReceived(BMessage* msg)
 			TRACE("\nmedia_server: unknown message received!\n");
 			break;
 	}
-	TRACE("ServerApp::MessageReceived %lx leave\n", msg->what);
+	TRACE("ServerApp::MessageReceived %" B_PRIu32 " leave\n", msg->what);
 }
 
 

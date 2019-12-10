@@ -212,7 +212,7 @@ FilterHTMLTag(int32 &first, char **t, char *end)
 			{"ograve;", 0x00f2},
 			{"ouml;",	0x00f6},
 			{"quot;",	'"'},
-			{"szlig;",	0x00f6},
+			{"szlig;",	0x00df},
 			{"uacute;", 0x00fa},
 			{"ucirc;",	0x00fb},
 			{"ugrave;", 0x00f9},
@@ -314,14 +314,17 @@ FindURL(const BString& string, int32 startIndex, int32& urlPos,
 	urlLength = strcspn(str, " \t<>)\"\\,\r\n");
 
 	// filter out some punctuation marks if they are the last character
-	char suffix = str[urlLength - 1];
-	while (suffix == '.'
-			|| suffix == ','
-			|| suffix == '?'
-			|| suffix == '!'
-			|| suffix == ':'
-			|| suffix == ';')
+	while (urlLength > 0) {
+		char suffix = str[urlLength - 1];
+		if (suffix != '.'
+				&& suffix != ','
+				&& suffix != '?'
+				&& suffix != '!'
+				&& suffix != ':'
+				&& suffix != ';')
+			break;
 		urlLength--;
+	}
 
 	if (urlString != NULL)
 		*urlString = BString(string.String() + urlPos, urlLength);
@@ -690,14 +693,14 @@ TContentView::MessageReceived(BMessage *msg)
 			break;
 		}
 
-		case M_QUOTE:
+		case M_ADD_QUOTE_LEVEL:
 		{
 			int32 start, finish;
 			fTextView->GetSelection(&start, &finish);
 			fTextView->AddQuote(start, finish);
 			break;
 		}
-		case M_REMOVE_QUOTE:
+		case M_SUB_QUOTE_LEVEL:
 		{
 			int32 start, finish;
 			fTextView->GetSelection(&start, &finish);
@@ -1842,8 +1845,10 @@ TTextView::Open(hyper_text *enclosure)
 						char baseName[B_FILE_NAME_LENGTH];
 						strcpy(baseName, enclosure->name ? enclosure->name : "enclosure");
 						strcpy(name, baseName);
-						for (int32 index = 0; dir.Contains(name); index++)
-							sprintf(name, "%s_%" B_PRId32, baseName, index);
+						for (int32 index = 0; dir.Contains(name); index++) {
+							snprintf(name, B_FILE_NAME_LENGTH, "%s_%" B_PRId32,
+								baseName, index);
+						}
 
 						BEntry entry(path.Path());
 						entry_ref ref;
@@ -2231,7 +2236,7 @@ TTextView::Reader::ParseMail(BMailContainer *container,
 			if (enclosure == NULL)
 				return false;
 
-			memset(enclosure, 0, sizeof(hyper_text));
+			memset((void*)enclosure, 0, sizeof(hyper_text));
 
 			enclosure->type = TYPE_ENCLOSURE;
 
@@ -2261,7 +2266,7 @@ TTextView::Reader::ParseMail(BMailContainer *container,
 			if (enclosure == NULL)
 				return false;
 
-			memset(enclosure, 0, sizeof(hyper_text));
+			memset((void*)enclosure, 0, sizeof(hyper_text));
 
 			enclosure->type = TYPE_ENCLOSURE;
 			enclosure->component = component;
@@ -2341,7 +2346,7 @@ TTextView::Reader::Process(const char *data, int32 data_len, bool isHeader)
 				if (enclosure == NULL)
 					return false;
 
-				memset(enclosure, 0, sizeof(hyper_text));
+				memset((void*)enclosure, 0, sizeof(hyper_text));
 				fView->GetSelection(&enclosure->text_start,
 					&enclosure->text_end);
 				enclosure->type = type;
@@ -3087,11 +3092,16 @@ TTextView::AddQuote(int32 start, int32 finish)
 			// add quote to this line
 			int32 lineLength = index - lastLine + 1;
 
-			target = (char *)realloc(target, targetLength + lineLength + quoteLength);
-			if (target == NULL) {
-				// free the old buffer?
+			char* newTarget = (char *)realloc(target,
+				targetLength + lineLength + quoteLength);
+			if (newTarget == NULL) {
+				// free the old buffer
+				free(target);
+				target = NULL;
 				free(text);
 				return;
+			} else {
+				target = newTarget;
 			}
 
 			// copy the quote sign

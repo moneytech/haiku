@@ -13,7 +13,6 @@
 #include <boot/stdio.h>
 #include <boot/stage2.h>
 #include <boot/net/IP.h>
-#include <boot/net/iSCSITarget.h>
 #include <boot/net/NetStack.h>
 #include <boot/net/RemoteDisk.h>
 #include <platform/openfirmware/devices.h>
@@ -76,20 +75,12 @@ platform_add_boot_device(struct stage2_args *args, NodeList *devicesList)
 				}
 			}
 
-			// init a remote disk, if possible
+			// init a native remote disk, if possible
 			RemoteDisk *remoteDisk = RemoteDisk::FindAnyRemoteDisk();
 			if (remoteDisk != NULL) {
 				devicesList->Add(remoteDisk);
 				return B_OK;
 			}
-
-#ifdef ENABLE_ISCSI
-			if (bootAddress != 0) {
-				if (iSCSITarget::DiscoverTargets(bootAddress, ISCSI_PORT,
-						devicesList))
-					return B_OK;
-			}
-#endif
 
 			return B_ENTRY_NOT_FOUND;
 		}
@@ -141,6 +132,13 @@ platform_get_boot_partitions(struct stage2_args *args, Node *device,
 }
 
 
+void
+platform_cleanup_devices()
+{
+	net_stack_cleanup();
+}
+
+
 #define DUMPED_BLOCK_SIZE 16
 
 void
@@ -184,7 +182,7 @@ platform_add_block_devices(stage2_args *args, NodeList *devicesList)
 {
 	// add all block devices to the list of possible boot devices
 
-	int cookie = 0;
+	intptr_t cookie = 0;
 	char path[256];
 	status_t status;
 	while ((status = of_get_next_device(&cookie, 0, "block", path,
@@ -207,7 +205,7 @@ platform_add_block_devices(stage2_args *args, NodeList *devicesList)
 
 		printf("\t%s\n", path);
 
-		int handle = of_open(path);
+		intptr_t handle = of_open(path);
 		if (handle == OF_FAILED) {
 			puts("\t\t(failed)");
 			continue;

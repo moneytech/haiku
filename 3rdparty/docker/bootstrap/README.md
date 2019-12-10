@@ -25,7 +25,7 @@ from the end users host and create more-reproduceable bootstrap builds.
 
 2) Check out the required sources
 
-```make init```
+```make prep```
 
 
 3) Build the crosstools (gcc only) for your target architecture
@@ -36,5 +36,5 @@ from the end users host and create more-reproduceable bootstrap builds.
 
 ```TARGET_ARCH=arm make bootstrap```
 
-5) If you need to enter the build environment, ```make enter``` will quickly let you do so.
+5) If you need to enter the build environment, ```TARGET_ARCH=arm make enter``` will quickly let you do so.
 6) profit!

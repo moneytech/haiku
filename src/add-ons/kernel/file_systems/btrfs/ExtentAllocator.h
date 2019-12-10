@@ -9,6 +9,8 @@
 #include "Volume.h"
 #include "BTree.h"
 
+#include <DebugSupport.h>
+
 
 //#define TRACE_BTRFS
 #ifdef TRACE_BTRFS
@@ -16,8 +18,6 @@
 #else
 #	define TRACE(x...) ;
 #endif
-
-#define ERROR(x...) dprintf("\33[34mbtrfs:\33[0m " x)
 
 
 struct CachedExtent : AVLTreeNode {
@@ -69,7 +69,7 @@ struct TreeDefinition {
 	int Compare(const Value* a, const Value* b) const
 	{
 		int comp = Compare(a->offset, b);
-		//TODO: check more conditions here if necessary
+		// TODO: check more conditions here if necessary
 		return comp;
 	}
 };

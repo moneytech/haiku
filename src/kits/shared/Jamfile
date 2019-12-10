@@ -1,6 +1,5 @@
 SubDir HAIKU_TOP src kits shared ;
 
-SetSubDirSupportedPlatformsBeOSCompatible ;
 AddSubDirSupportedPlatforms libbe_test ;
 
 UseLibraryHeaders agg ;
@@ -26,10 +25,14 @@ for architectureObject in [ MultiArchSubDirSetup ] {
 		UsePrivateSystemHeaders ;
 		UsePrivateHeaders kernel libroot ;
 
+		# for BKeymap
+		UsePrivateHeaders interface ;
+
 		StaticLibrary <$(architecture)>libshared.a :
 			AboutMenuItem.cpp
 			ArgumentVector.cpp
 			AttributeUtilities.cpp
+			BitmapButton.cpp
 			CalendarView.cpp
 			ColorQuantizer.cpp
 			CommandPipe.cpp
@@ -54,9 +57,11 @@ for architectureObject in [ MultiArchSubDirSetup ] {
 			RegExp.cpp
 			RWLocker.cpp
 			RWLockManager.cpp
+			SettingsHandler.cpp
 			ShakeTrackingFilter.cpp
 			StringForRate.cpp
 			StringForSize.cpp
+			StripeView.cpp
 			TextTable.cpp
 			Thread.cpp
 			ToolBar.cpp

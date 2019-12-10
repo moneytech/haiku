@@ -255,13 +255,17 @@ ScreenWindow::ScreenWindow(ScreenSettings* settings)
 	screenBox->AddChild(BLayoutBuilder::Group<>()
 		.AddGroup(B_VERTICAL, B_USE_SMALL_SPACING)
 			.Add(workspaces)
-			.AddGrid(B_USE_DEFAULT_SPACING, B_USE_SMALL_SPACING)
-				// columns
-				.Add(fColumnsControl->CreateLabelLayoutItem(), 0, 0)
-				.Add(fColumnsControl->CreateTextViewLayoutItem(), 1, 0)
-				// rows
-				.Add(fRowsControl->CreateLabelLayoutItem(), 0, 1)
-				.Add(fRowsControl->CreateTextViewLayoutItem(), 1, 1)
+			.AddGroup(B_HORIZONTAL, 0)
+				.AddGlue()
+				.AddGrid(B_USE_DEFAULT_SPACING, B_USE_SMALL_SPACING)
+					// columns
+					.Add(fColumnsControl->CreateLabelLayoutItem(), 0, 0)
+					.Add(fColumnsControl->CreateTextViewLayoutItem(), 1, 0)
+					// rows
+					.Add(fRowsControl->CreateLabelLayoutItem(), 0, 1)
+					.Add(fRowsControl->CreateTextViewLayoutItem(), 1, 1)
+					.End()
+				.AddGlue()
 				.End()
 			.End()
 		.View());
@@ -506,7 +510,7 @@ ScreenWindow::ScreenWindow(ScreenSettings* settings)
 			.Add(fTVStandardField->CreateMenuBarLayoutItem(), 1, 6)
 		.End();
 
-	fBrightnessSlider = new BSlider("brightness", "Brightness",
+	fBrightnessSlider = new BSlider("brightness", B_TRANSLATE("Brightness:"),
 		NULL, 0, 255, B_HORIZONTAL);
 
 	status_t result = screen.GetBrightness(&fOriginalBrightness);
@@ -738,7 +742,8 @@ ScreenWindow::_UpdateRefreshControl()
 		if (item->Message()->FindFloat("refresh") == fSelected.refresh) {
 			item->SetMarked(true);
 			// "Other" items only contains a refresh rate when active
-			fOtherRefresh->SetLabel(B_TRANSLATE("Other" B_UTF8_ELLIPSIS));
+			if (fOtherRefresh != NULL)
+				fOtherRefresh->SetLabel(B_TRANSLATE("Other" B_UTF8_ELLIPSIS));
 			return;
 		}
 	}

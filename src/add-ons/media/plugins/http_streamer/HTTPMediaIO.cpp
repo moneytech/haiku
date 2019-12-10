@@ -12,8 +12,6 @@
 
 #include "MediaDebug.h"
 
-using namespace BCodecKit;
-
 
 // 10 seconds timeout
 #define HTTP_TIMEOUT 10000000

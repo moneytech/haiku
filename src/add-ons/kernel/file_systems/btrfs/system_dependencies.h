@@ -10,8 +10,9 @@
 
 // This needs to be included before the fs_shell wrapper
 #include <zlib.h>
-#include <new>
+
 #include <util/AVLTree.h>
+#include <uuid.h>
 
 #include "fssh_api_wrapper.h"
 #include "fssh_auto_deleter.h"
@@ -27,6 +28,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <ByteOrder.h>
+#include <driver_settings.h>
 #include <fs_cache.h>
 #include <fs_interface.h>
 #include <fs_info.h>
@@ -43,6 +45,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <uuid.h>
 #include <zlib.h>
 
 #endif	// !FS_SHELL

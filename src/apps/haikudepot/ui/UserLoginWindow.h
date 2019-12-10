@@ -1,5 +1,6 @@
 /*
  * Copyright 2014, Stephan Aßmus <superstippi@gmx.de>.
+ * Copyright 2019, Andrew Lindesay <apl@lindesay.co.nz>.
  * All rights reserved. Distributed under the terms of the MIT License.
  */
 #ifndef USER_LOGIN_WINDOW_H
@@ -13,11 +14,14 @@
 
 
 class BButton;
+class BCheckBox;
 class BMenuField;
 class BTabView;
 class BTextControl;
 class BitmapView;
+class LinkView;
 class Model;
+class UserUsageConditions;
 
 
 class UserLoginWindow : public BWindow {
@@ -33,6 +37,7 @@ public:
 									const BMessage& message);
 
 private:
+
 			enum Mode {
 				NONE = 0,
 				LOGIN,
@@ -44,7 +49,8 @@ private:
 									bool alertProblems = false);
 			void				_Login();
 			void				_CreateAccount();
-			void				_RequestCaptcha();
+			void				_CreateAccountSetup(uint32 mask);
+			void				_CreateAccountSetupIfNecessary();
 			void				_LoginSuccessful(const BString& message);
 
 			void				_SetWorkerThread(thread_id thread);
@@ -52,8 +58,12 @@ private:
 	static	int32				_AuthenticateThreadEntry(void* data);
 			void				_AuthenticateThread();
 
-	static	int32				_RequestCaptchaThreadEntry(void* data);
-			void				_RequestCaptchaThread();
+	static	int32				_CreateAccountSetupThreadEntry(void* data);
+			void				_CreateAccountCaptchaSetupThread();
+			void				_CreateAccountUserUsageConditionsSetupThread();
+
+			void				_SetUserUsageConditions(
+									UserUsageConditions* userUsageConditions);
 
 	static	int32				_CreateAccountThreadEntry(void* data);
 			void				_CreateAccountThread();
@@ -61,6 +71,8 @@ private:
 			void				_CollectValidationFailures(
 									const BMessage& result,
 									BString& error) const;
+
+			void				_ViewUserUsageConditions();
 
 private:
 			BMessenger			fOnSuccessTarget;
@@ -78,17 +90,23 @@ private:
 			BMenuField*			fLanguageCodeField;
 			BitmapView*			fCaptchaView;
 			BTextControl*		fCaptchaResultField;
+			BCheckBox*			fConfirmMinimumAgeCheckBox;
+			BCheckBox*			fConfirmUserUsageConditionsCheckBox;
+			LinkView*			fUserUsageConditionsLink;
 
 			BButton*			fSendButton;
 			BButton*			fCancelButton;
 
 			BString				fCaptchaToken;
 			BitmapRef			fCaptchaImage;
-			BString				fPreferredLanguage;
+			BString				fPreferredLanguageCode;
 
 			Model&				fModel;
 
 			Mode				fMode;
+
+			UserUsageConditions*
+								fUserUsageConditions;
 
 			BLocker				fLock;
 			thread_id			fWorkerThread;

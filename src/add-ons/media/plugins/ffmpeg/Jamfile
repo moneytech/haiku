@@ -1,8 +1,7 @@
 SubDir HAIKU_TOP src add-ons media plugins ffmpeg ;
 
-SetSubDirSupportedPlatformsBeOSCompatible ;
-
-UsePrivateHeaders shared ;
+UsePrivateHeaders media shared ;
+UsePrivateHeaders [ FDirName media experimental ] ;
 
 SubDirC++Flags -D__STDC_CONSTANT_MACROS -Wdeprecated ;
 
@@ -57,7 +56,6 @@ for architectureObject in [ MultiArchSubDirSetup ] {
 
 			be
 			media
-			codec
 			[ TargetLibsupc++ ]
 		;
 	}

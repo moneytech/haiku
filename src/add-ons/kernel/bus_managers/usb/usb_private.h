@@ -89,9 +89,8 @@ typedef enum {
 	USB_SPEED_LOWSPEED = 0,
 	USB_SPEED_FULLSPEED,
 	USB_SPEED_HIGHSPEED,
-	USB_SPEED_SUPER,
-	USB_SPEED_WIRELESS,
-	USB_SPEED_MAX = USB_SPEED_WIRELESS
+	USB_SPEED_SUPERSPEED,
+	USB_SPEED_MAX = USB_SPEED_SUPERSPEED
 } usb_speed;
 
 
@@ -297,6 +296,8 @@ virtual	void							InitCommon(int8 deviceAddress,
 											size_t maxPacketSize,
 											uint8 interval,
 											int8 hubAddress, uint8 hubPort);
+virtual void							InitSuperSpeed(uint8 maxBurst,
+											uint16 bytesPerInterval);
 
 virtual	uint32							Type() const { return USB_OBJECT_PIPE; }
 virtual	const char *					TypeName() const { return "pipe"; }
@@ -310,6 +311,12 @@ virtual	const char *					TypeName() const { return "pipe"; }
 		size_t							MaxPacketSize() const
 											{ return fMaxPacketSize; }
 		uint8							Interval() const { return fInterval; }
+
+		// SuperSpeed-only parameters
+		uint8							MaxBurst() const
+											{ return fMaxBurst; }
+		uint16							BytesPerInterval() const
+											{ return fBytesPerInterval; }
 
 		// Hub port being the one-based logical port number on the hub
 		void							SetHubInfo(int8 address, uint8 port);
@@ -342,6 +349,8 @@ private:
 		usb_speed						fSpeed;
 		size_t							fMaxPacketSize;
 		uint8							fInterval;
+		uint8							fMaxBurst;
+		uint16							fBytesPerInterval;
 		int8							fHubAddress;
 		uint8							fHubPort;
 		bool							fDataToggle;

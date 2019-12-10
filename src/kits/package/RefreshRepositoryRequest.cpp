@@ -74,6 +74,10 @@ BRefreshRepositoryRequest::CreateInitialJobs()
 
 	BRepositoryCache repoCache;
 	BPackageRoster roster;
+	// We purposely don't check this error, because this may be for a new repo,
+	// which doesn't have a cache file yet. The true passed to
+	// GeneralFileChecksumAccessor below will handle this case, and cause the
+	// repo data to be fetched and cached for the future in JobSucceeded below.
 	roster.GetRepositoryCache(fRepoConfig.Name(), &repoCache);
 
 	ValidateChecksumJob* validateChecksumJob

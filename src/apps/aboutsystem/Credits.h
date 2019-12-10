@@ -37,11 +37,9 @@ static const Translation kTranslations[] = {
 		"cssvb94\n"
 		"naydef\n"
 	},
-#if 0
 	{ "ca",
 		"Paco Rivière\n"
 	},
-#endif
 	{ "zh",
 		"Dong Guangyu\n"
 		"Pengfei Han (kurain)\n"
@@ -125,6 +123,9 @@ static const Translation kTranslations[] = {
 		"roptat\n"
 		"Starchaser\n"
 		"Wabouz\n"
+	},
+	{ "fur",
+		"Fabio Tomat\n"
 	},
 	{ "de",
 		"Atalanttore\n"
@@ -378,7 +379,6 @@ static const Translation kTranslations[] = {
 
 #define kCurrentMaintainers \
 	"Stephan Aßmus\n" \
-	"Dario Casalinuovo\n" \
 	"Augustin Cavalier\n" \
 	"Stefano Ceccherini\n" \
 	"Adrien Destugues\n" \
@@ -391,6 +391,7 @@ static const Translation kTranslations[] = {
 	"Fredrik Holmqvist\n" \
 	"Philippe Houdoin\n" \
 	"Kacper Kasper\n" \
+	"Ryan Leavengood\n" \
 	"Andrew Lindesay\n" \
 	"Michael Lotz\n" \
 	"Scott McCreary\n" \
@@ -412,6 +413,7 @@ static const Translation kTranslations[] = {
 	"Bruno G. Albuquerque\n" \
 	"Andrew Bachmann\n" \
 	"Salvatore Benedetto\n" \
+	"Dario Casalinuovo\n" \
 	"Rudolf Cornelissen\n" \
 	"Tyler Dauwalder\n" \
 	"Alexandre Deckner\n" \
@@ -428,7 +430,6 @@ static const Translation kTranslations[] = {
 	"Marcin Konicki\n" \
 	"Waldemar Kornewald\n" \
 	"Thomas Kurschel\n" \
-	"Ryan Leavengood\n" \
 	"Brecht Machiels\n" \
 	"Matt Madia\n" \
 	"David McPaul\n" \

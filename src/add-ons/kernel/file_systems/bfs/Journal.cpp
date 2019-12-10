@@ -7,6 +7,8 @@
 //! Transaction and logging
 
 
+#include <StackOrHeapArray.h>
+
 #include "Journal.h"
 
 #include "Debug.h"
@@ -409,6 +411,12 @@ Journal::Journal(Volume* volume)
 {
 	recursive_lock_init(&fLock, "bfs journal");
 	mutex_init(&fEntriesLock, "bfs journal entries");
+
+	fLogFlusherSem = create_sem(0, "bfs log flusher");
+	fLogFlusher = spawn_kernel_thread(&Journal::_LogFlusher, "bfs log flusher",
+		B_NORMAL_PRIORITY, this);
+	if (fLogFlusher > 0)
+		resume_thread(fLogFlusher);
 }
 
 
@@ -418,6 +426,11 @@ Journal::~Journal()
 
 	recursive_lock_destroy(&fLock);
 	mutex_destroy(&fEntriesLock);
+
+	sem_id logFlusher = fLogFlusherSem;
+	fLogFlusherSem = -1;
+	delete_sem(logFlusher);
+	wait_for_thread(fLogFlusher, NULL);
 }
 
 
@@ -685,20 +698,24 @@ Journal::_TransactionWritten(int32 transactionID, int32 event, void* _logEntry)
 /*static*/ void
 Journal::_TransactionIdle(int32 transactionID, int32 event, void* _journal)
 {
-	// The current transaction seems to be idle - flush it. We can't do this
-	// in this thread, as flushing the log can produce new transaction events.
-	thread_id id = spawn_kernel_thread(&Journal::_FlushLog, "bfs log flusher",
-		B_NORMAL_PRIORITY, _journal);
-	if (id > 0)
-		resume_thread(id);
+	// The current transaction seems to be idle - flush it. (We can't do this
+	// in this thread, as flushing the log can produce new transaction events.)
+	Journal* journal = (Journal*)_journal;
+	release_sem(journal->fLogFlusherSem);
 }
 
 
 /*static*/ status_t
-Journal::_FlushLog(void* _journal)
+Journal::_LogFlusher(void* _journal)
 {
 	Journal* journal = (Journal*)_journal;
-	return journal->_FlushLog(false, false);
+	while (journal->fLogFlusherSem >= 0) {
+		if (acquire_sem(journal->fLogFlusherSem) != B_OK)
+			continue;
+
+		journal->_FlushLog(false, false);
+	}
+	return B_OK;
 }
 
 
@@ -784,8 +801,8 @@ Journal::_WriteTransactionToLog()
 	int32 maxVecs = runArrays.MaxArrayLength() + 1;
 		// one extra for the index block
 
-	iovec* vecs = (iovec*)malloc(sizeof(iovec) * maxVecs);
-	if (vecs == NULL) {
+	BStackOrHeapArray<iovec, 8> vecs(maxVecs);
+	if (!vecs.IsValid()) {
 		// TODO: write back log entries directly?
 		return B_NO_MEMORY;
 	}
@@ -821,10 +838,8 @@ Journal::_WriteTransactionToLog()
 				// make blocks available in the cache
 				const void* data = block_cache_get(fVolume->BlockCache(),
 					blockNumber + j);
-				if (data == NULL) {
-					free(vecs);
+				if (data == NULL)
 					return B_IO_ERROR;
-				}
 
 				add_to_iovec(vecs, index, maxVecs, data, fVolume->BlockSize());
 				count++;
@@ -851,8 +866,6 @@ Journal::_WriteTransactionToLog()
 
 		logStart = logPosition % fLogSize;
 	}
-
-	free(vecs);
 
 	LogEntry* logEntry = new(std::nothrow) LogEntry(this, fVolume->LogEnd(),
 		runArrays.LogEntryLength());
@@ -929,7 +942,7 @@ Journal::_FlushLog(bool canWait, bool flushBlocks)
 
 	// write the current log entry to disk
 
-	if (fUnwrittenTransactions != 0 && _TransactionSize() != 0) {
+	if (fUnwrittenTransactions != 0) {
 		status = _WriteTransactionToLog();
 		if (status < B_OK)
 			FATAL(("writing current log entry failed: %s\n", strerror(status)));
